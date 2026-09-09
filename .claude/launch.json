@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "brindex-api",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "BRINDEX_DB_PATH=${BRINDEX_DB_PATH:-/tmp/brindex/brindex.sqlite} ./gradlew run"
+      ],
+      "port": 8080,
+      "autoPort": true
+    }
+  ]
+}

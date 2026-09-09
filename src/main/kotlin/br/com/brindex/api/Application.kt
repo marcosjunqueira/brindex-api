@@ -12,7 +12,8 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 
 fun main() {
-    embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module).start(wait = true)
+    val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
+    embeddedServer(Netty, port = port, host = "0.0.0.0", module = Application::module).start(wait = true)
 }
 
 fun Application.module(dbPath: String = System.getenv("BRINDEX_DB_PATH") ?: "brindex.sqlite") {
