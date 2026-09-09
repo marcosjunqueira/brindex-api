@@ -94,13 +94,13 @@ curl -sS "http://localhost:$PORT/series"; echo
 echo "== GET /series?domain=ptax =="
 curl -sS "http://localhost:$PORT/series?domain=ptax"; echo
 
-echo "== GET /series/{code}/points (code URL-encoded) =="
-curl -sS "http://localhost:$PORT/series/TD%3ALFT%3A2026-03-01%3ABUY/points"; echo
+echo "== GET /series/{...code segments}/points =="
+curl -sS "http://localhost:$PORT/series/TD/LFT/2026-03-01/BUY/points"; echo
 
-echo "== GET /series/{code}/points/latest =="
-curl -sS "http://localhost:$PORT/series/TD%3ALFT%3A2026-03-01%3ABUY/points/latest"; echo
+echo "== GET /series/{...code segments}/points/latest =="
+curl -sS "http://localhost:$PORT/series/TD/LFT/2026-03-01/BUY/points/latest"; echo
 
 echo "== GET /series/{unknown}/points -> expect 404 =="
-curl -sS -o /dev/null -w "status: %{http_code}\n" "http://localhost:$PORT/series/DOES%3ANOT%3AEXIST/points"
+curl -sS -o /dev/null -w "status: %{http_code}\n" "http://localhost:$PORT/series/DOES/NOT/EXIST/points"
 
 echo "== smoke test passed =="

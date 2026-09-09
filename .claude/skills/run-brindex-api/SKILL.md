@@ -1,6 +1,6 @@
 ---
 name: run-brindex-api
-description: Build, run, and drive brindex-api (the Kotlin/Ktor read-only HTTP API over the BRIndex SQLite database). Use when asked to start brindex-api, build it, run its tests, or hit its endpoints (/health, /series, /series/{code}/points, /series/{code}/points/latest).
+description: Build, run, and drive brindex-api (the Kotlin/Ktor read-only HTTP API over the BRIndex SQLite database). Use when asked to start brindex-api, build it, run its tests, or hit its endpoints (/health, /series, /series/{...code segments}/points, /series/{...code segments}/points/latest).
 ---
 
 brindex-api is a Kotlin + Ktor (Netty) server with no UI — drive it with
@@ -53,7 +53,7 @@ Expected tail of output:
 ok
 == GET /series ==
 [{"code":"PTAX:USD:SELL", ...}, {"code":"TD:LFT:2026-03-01:BUY", ...}]
-== GET /series/{code}/points/latest ==
+== GET /series/{...code segments}/points/latest ==
 {"date":"2026-01-06","value":1234.5678901234,"extra_values":null,"source_updated_at":"2026-09-09T00:00:00Z"}
 == GET /series/{unknown}/points -> expect 404 ==
 status: 404
@@ -81,8 +81,11 @@ wrapper process; it does not forward `SIGTERM` to the JVM it spawns):
 lsof -ti:8080 -sTCP:LISTEN | xargs -r kill
 ```
 
-`code` path segments contain `:` (e.g. `TD:LFT:2026-03-01:BUY`) and must be
-URL-encoded in requests: `TD%3ALFT%3A2026-03-01%3ABUY`.
+The canonical `code` is `:`-joined (e.g. `TD:LFT:2026-03-01:BUY`), but the API
+never expects that string as a single URL-encoded path segment — each
+`:`-separated part is its own path segment instead:
+`/series/TD/LFT/2026-03-01/BUY/points`. The server reconstructs the `:`-joined
+`code` internally before querying the database.
 
 ### Environment
 
@@ -103,7 +106,7 @@ URL-encoded in requests: `TD%3ALFT%3A2026-03-01%3ABUY`.
 ./gradlew test
 ```
 
-16 tests in `SeriesRoutesTest` (fixture-DB-backed contract tests for all
+20 tests in `SeriesRoutesTest` (fixture-DB-backed contract tests for all
 three data endpoints, including malformed-input and malformed-stored-data
 error paths) plus 1 in `ApplicationTest` (`/health`) — all pass.
 

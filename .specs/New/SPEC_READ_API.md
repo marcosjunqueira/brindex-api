@@ -1,6 +1,8 @@
 # Specification — Read-only HTTP API over the BRIndex historical series database
 
-**Status:** New — scaffold exists (`Application.kt`, `/health`), no data endpoints implemented yet
+**Status:** New — `/health` and all three data endpoints (`/series`, `/series/.../points`,
+`/series/.../points/latest`) are implemented; response shape and error format were settled by the
+first implementation PR, pagination remains open (see §4)
 **Date:** 2026-09-09
 **Repo:** `brindex-api`
 **Related:** `brindex-ingest` (writes the SQLite database this API reads from) — the two repos are
@@ -49,17 +51,39 @@ string. PTAX codes are `PTAX:USD:BUY`/`PTAX:USD:SELL`; Tesouro Direto codes (e.g
 - `GET /health` — implemented. Returns `200 ok`. Used for liveness checks.
 - `GET /series?domain=<domain>` — list known series, optionally filtered by domain. Returns
   `code`, `domain`, `name`, `metadata` (as parsed JSON, not the raw string) per row.
-- `GET /series/{code}/points?since=<YYYY-MM-DD>&until=<YYYY-MM-DD>` — historical points for one
-  series in a date range. Both `since` and `until` optional; absent `since` means "from the
-  earliest point", absent `until` means "up to the latest". `code` must be URL-encoded as-is (it
-  contains `:`).
-- `GET /series/{code}/points/latest` — the single most recent point for a series. The most common
-  query shape ("what's today's PU for this bond").
+- `GET /series/{...code segments}/points?since=<YYYY-MM-DD>&until=<YYYY-MM-DD>` — historical points
+  for one series in a date range. Both `since` and `until` optional; absent `since` means "from the
+  earliest point", absent `until` means "up to the latest".
+- `GET /series/{...code segments}/points/latest` — the single most recent point for a series. The
+  most common query shape ("what's today's PU for this bond").
 
-None of the three data endpoints is implemented yet — only the scaffold and `/health` exist.
-Response shape (JSON field casing, error format for an unknown `code`, pagination for `/points`
-over a very long range) is an open design question for the first implementation PR, not decided by
-this document.
+All three data endpoints are implemented. Response shape (JSON field casing, error format for an
+unknown `code`) was settled by the first implementation PR; pagination for `/points` over a very
+long range remains an open design question, deferred per §4.
+
+### 3.1 `code` as path segments, not a single URL-encoded token
+
+`series.code` is canonically `<DOMAIN>:<IDENTIFIER...>`, `:`-joined (§2). Exposing that string as a
+single path segment would force every client to URL-encode each `:` as `%3A` — e.g.
+`/series/TD%3ALFT%3A2026-03-01%3ABUY/points` — which is illegible. Instead the API decomposes the
+code into one path segment per `:`-separated part, with the domain as the first segment:
+
+| `code`                    | Path                              |
+| ------------------------- | ---------------------------------- |
+| `TD:LFT:2026-03-01:BUY`   | `/series/TD/LFT/2026-03-01/BUY/points` |
+| `PTAX:USD:SELL`           | `/series/PTAX/USD/SELL/points`         |
+| `CDI:SGS:4391`            | `/series/CDI/SGS/4391/points`          |
+
+The number of identifier segments varies by domain, so the route captures the whole tail after
+`/series/` and the handler recovers the exact stored `code` by rejoining the segments with `:`
+before ever querying the database — this API still never invents or reinterprets a `code`, it just
+changes how one is spelled in a URL. There is no deliberate backward-compatible redirect from the
+old single-segment/URL-encoded form: this endpoint was never released to a consumer other than this
+repo's own tests, so the breaking change ships directly rather than carrying compatibility weight
+for a format nothing depends on. In practice the old form still happens to resolve — Ktor decodes
+each path segment before routing sees it, so `TD%3ALFT%3A2026-03-01%3ABUY` arrives as one segment
+whose value already contains `:`, and rejoining a single segment with `:` is a no-op that recovers
+the same code — but this is incidental, not a documented or guaranteed compatibility path.
 
 ## 4. Non-goals for v1
 

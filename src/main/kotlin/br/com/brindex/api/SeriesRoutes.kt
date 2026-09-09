@@ -115,14 +115,59 @@ private suspend fun ApplicationCall.respondSeriesNotFound() {
     respond(HttpStatusCode.NotFound, ErrorDto("series not found"))
 }
 
+private fun List<String>.toSeriesCode(): String = joinToString(":")
+
 fun Route.seriesRoutes(repo: SeriesRepository) {
     get("/series") {
         val domain = call.request.queryParameters["domain"]
         call.respond(repo.listSeries(domain).map { it.toDto() })
     }
 
-    get("/series/{code}/points") {
-        val code = call.parameters["code"]!!
+    /**
+     * A series `code` is canonically `<DOMAIN>:<IDENTIFIER...>` (see SPEC_READ_API.md §2) — the
+     * `:`-joined string stored in `series.code`/`points.series_code`. Exposing that string as a
+     * single path segment would force clients to percent-encode every `:` (`%3A`), illegible in a
+     * URL. Instead each `:`-separated part is its own path segment (`TD/LFT/2026-03-01/BUY`,
+     * `PTAX/USD/BUY`, `CDI/SGS/4391`) and `toSeriesCode()` joins them back with `:` to recover the
+     * exact stored code before it ever reaches the repository/database layer.
+     *
+     * The number of identifier parts varies by domain, so this can't be a fixed-arity route per
+     * domain. Ktor's tailcard (`{param...}`) captures a variable number of trailing segments, but
+     * only when it is the very last element of the route pattern — `segmentIncrement` for
+     * `PathSegmentTailcardRouteSelector` always consumes every remaining segment, so it can't be
+     * followed by literal segments like `/points` in the same route. Instead this single catch-all
+     * route captures the whole tail under `/series/`, and the handler strips the trailing `points`
+     * or `points/latest` marker segments itself to recover the code segments.
+     */
+    get("/series/{tail...}") {
+        val segments = call.parameters.getAll("tail").orEmpty()
+        val isLatest = segments.size >= 2 && segments.last() == "latest" && segments[segments.size - 2] == "points"
+        val isPoints = !isLatest && segments.isNotEmpty() && segments.last() == "points"
+        val codeSegments = when {
+            isLatest -> segments.dropLast(2)
+            isPoints -> segments.dropLast(1)
+            else -> null
+        }
+        if (codeSegments == null || codeSegments.isEmpty()) {
+            call.respond(HttpStatusCode.NotFound, ErrorDto("not found"))
+            return@get
+        }
+        val code = codeSegments.toSeriesCode()
+
+        if (isLatest) {
+            val point = repo.latestPoint(code)
+            if (point == null) {
+                if (!repo.seriesExists(code)) {
+                    call.respondSeriesNotFound()
+                } else {
+                    call.respond(HttpStatusCode.NotFound, ErrorDto("no points for series"))
+                }
+                return@get
+            }
+            call.respond(point.toDto())
+            return@get
+        }
+
         val since = call.request.queryParameters["since"]
         val until = call.request.queryParameters["until"]
         if (since != null && !ISO_DATE.matches(since)) {
@@ -141,19 +186,5 @@ fun Route.seriesRoutes(repo: SeriesRepository) {
             return@get
         }
         call.respond(points.map { it.toDto() })
-    }
-
-    get("/series/{code}/points/latest") {
-        val code = call.parameters["code"]!!
-        val point = repo.latestPoint(code)
-        if (point == null) {
-            if (!repo.seriesExists(code)) {
-                call.respondSeriesNotFound()
-            } else {
-                call.respond(HttpStatusCode.NotFound, ErrorDto("no points for series"))
-            }
-            return@get
-        }
-        call.respond(point.toDto())
     }
 }
