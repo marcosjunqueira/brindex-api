@@ -22,40 +22,42 @@ network boundary between ingestion and API at this stage):
 
 ```sql
 CREATE TABLE series (
-  codigo        TEXT PRIMARY KEY,   -- e.g. 'TD:LFT:2026-03-01', 'PTAX:USD:VENDA', 'CDI:SGS:4391'
-  dominio       TEXT NOT NULL,      -- 'tesouro-direto' | 'ptax' | 'cdi'
-  nome          TEXT NOT NULL,
-  metadados     TEXT NOT NULL,      -- opaque JSON, domain-specific
-  criado_em     TEXT NOT NULL
+  code          TEXT PRIMARY KEY,   -- e.g. 'TD:LFT:2026-03-01', 'PTAX:USD:SELL', 'CDI:SGS:4391'
+  domain        TEXT NOT NULL,      -- 'treasury-direct' | 'ptax' | 'cdi'
+  name          TEXT NOT NULL,
+  metadata      TEXT NOT NULL,      -- opaque JSON, domain-specific
+  created_at    TEXT NOT NULL
 );
 
-CREATE TABLE pontos (
-  serie_codigo  TEXT NOT NULL REFERENCES series(codigo),
-  data          TEXT NOT NULL,      -- YYYY-MM-DD
-  valor         TEXT NOT NULL,      -- decimal as STRING, never float — see §5
-  valores_extra TEXT,               -- optional JSON, e.g. PU compra/venda alongside PU base
-  fonte_atualizado_em TEXT NOT NULL,
-  PRIMARY KEY (serie_codigo, data)
+CREATE TABLE points (
+  series_code   TEXT NOT NULL REFERENCES series(code),
+  date          TEXT NOT NULL,      -- YYYY-MM-DD
+  value         TEXT NOT NULL,      -- decimal as STRING, never float — see §5
+  extra_values  TEXT,               -- optional JSON, e.g. PU buy/sell alongside PU base
+  source_updated_at TEXT NOT NULL,
+  PRIMARY KEY (series_code, date)
 );
 ```
 
-The identity scheme (`<DOMINIO>:<IDENTIFICADOR>`) is decided in `brindex-ingest`'s own spec and
-mirrored here verbatim — this API never invents or reinterprets a `codigo`, it only looks entries
-up by the exact string.
+The identity scheme (`<DOMAIN>:<IDENTIFIER>`) is decided in `brindex-ingest`'s own spec and mirrored
+here — this API never invents or reinterprets a `code`, it only looks entries up by the exact
+string. PTAX codes are `PTAX:USD:BUY`/`PTAX:USD:SELL`; Tesouro Direto codes (e.g.
+`TD:LFT:2026-03-01`) and CDI codes are language-neutral.
 
 ## 3. Endpoints (planned, not yet implemented)
 
 - `GET /health` — implemented. Returns `200 ok`. Used for liveness checks.
-- `GET /series?dominio=<dominio>` — list known series, optionally filtered by domain. Returns
-  `codigo`, `dominio`, `nome`, `metadados` (as parsed JSON, not the raw string) per row.
-- `GET /series/{codigo}/pontos?de=<YYYY-MM-DD>&ate=<YYYY-MM-DD>` — historical points for one series
-  in a date range. Both `de` and `ate` optional; absent `de` means "from the earliest point",
-  absent `ate` means "up to the latest". `codigo` must be URL-encoded as-is (it contains `:`).
-- `GET /series/{codigo}/pontos/ultimo` — the single most recent point for a series. The most common
+- `GET /series?domain=<domain>` — list known series, optionally filtered by domain. Returns
+  `code`, `domain`, `name`, `metadata` (as parsed JSON, not the raw string) per row.
+- `GET /series/{code}/points?since=<YYYY-MM-DD>&until=<YYYY-MM-DD>` — historical points for one
+  series in a date range. Both `since` and `until` optional; absent `since` means "from the
+  earliest point", absent `until` means "up to the latest". `code` must be URL-encoded as-is (it
+  contains `:`).
+- `GET /series/{code}/points/latest` — the single most recent point for a series. The most common
   query shape ("what's today's PU for this bond").
 
 None of the three data endpoints is implemented yet — only the scaffold and `/health` exist.
-Response shape (JSON field casing, error format for an unknown `codigo`, pagination for `/pontos`
+Response shape (JSON field casing, error format for an unknown `code`, pagination for `/points`
 over a very long range) is an open design question for the first implementation PR, not decided by
 this document.
 
@@ -65,12 +67,12 @@ this document.
   only by the user's own `cornerstone-app`. An API-key/rate-limiting layer is an explicit future
   phase, not designed here.
 - **No write endpoints.** All ingestion happens in `brindex-ingest`, out of process.
-- **No pagination design yet** for `/pontos` over multi-year ranges — deferred until real data
+- **No pagination design yet** for `/points` over multi-year ranges — deferred until real data
   volume makes it necessary to decide.
 
 ## 5. Money/decimal discipline
 
-`valor` and any numeric field inside `valores_extra`/`metadados` must be serialized as JSON numbers
+`value` and any numeric field inside `extra_values`/`metadata` must be serialized as JSON numbers
 only from a decimal representation that was never a `Double`/`Float` in application code — SQLite
 stores them as `TEXT` specifically to avoid float round-off silently entering the historical record.
 A missing/unparseable value from a source must be persisted as SQL `NULL`, never as `NaN` or a
@@ -84,5 +86,5 @@ callers need to be able to tell them apart.
 - Each new endpoint needs a `testApplication` contract test against a database seeded with known
   fixture rows (not a live `brindex-ingest` run) — mirrors the "always fixture, never hit the real
   source in CI" discipline `brindex-ingest`'s own spec establishes for its parsers.
-- A `codigo` that doesn't exist in `series` must return a clear 404, not a 200 with an empty body or
+- A `code` that doesn't exist in `series` must return a clear 404, not a 200 with an empty body or
   a 500 — test this explicitly once implemented.
