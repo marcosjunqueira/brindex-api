@@ -10,10 +10,14 @@ DB_PATH="$WORKDIR/fixture.sqlite"
 LOG_PATH="${LOG_PATH:-/tmp/brindex-api.log}"
 
 cleanup() {
-  if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill "$SERVER_PID" 2>/dev/null || true
+  # Kill the specific PID captured right after our own health check passed (see below) — not
+  # "whatever is on $PORT at exit time", which could by then be an unrelated process (another dev
+  # server, a stuck prior run) if ours already died. Narrows, but doesn't eliminate, the ownership
+  # risk of a port-based kill; there's no cheaper way to find the real listener, since `./gradlew
+  # run &` backgrounds the Gradle wrapper, not the forked server JVM, so `$!` doesn't identify it.
+  if [[ -n "${OWNED_SERVER_PID:-}" ]] && kill -0 "$OWNED_SERVER_PID" 2>/dev/null; then
+    kill "$OWNED_SERVER_PID" 2>/dev/null || true
   fi
-  lsof -ti:"$PORT" -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
   rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
@@ -66,11 +70,11 @@ echo "== Building =="
 
 echo "== Starting server on :$PORT (log: $LOG_PATH) =="
 BRINDEX_DB_PATH="$DB_PATH" ./gradlew -q run > "$LOG_PATH" 2>&1 &
-SERVER_PID=$!
 
 echo "== Waiting for /health =="
 for i in $(seq 1 60); do
   if curl -sf "http://localhost:$PORT/health" > /dev/null; then
+    OWNED_SERVER_PID="$(lsof -ti:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1)"
     break
   fi
   sleep 1

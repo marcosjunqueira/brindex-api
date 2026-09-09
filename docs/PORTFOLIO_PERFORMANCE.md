@@ -79,6 +79,14 @@ BRINDEX_DB_PATH=/path/to/brindex.sqlite nohup ./gradlew run > /tmp/brindex-api.l
 disown
 ```
 
+To stop it later, don't rely on the disowned PID — `./gradlew run` forks the actual server as a
+child of the Gradle daemon, not of the process you just backgrounded, so killing that PID alone can
+leave the server (and port 8080) running. Kill by port instead:
+
+```bash
+lsof -ti:8080 -sTCP:LISTEN | xargs -r kill
+```
+
 ## Data gaps
 
 The price history only goes as far as `brindex-ingest` has actually ingested — if the latest date

@@ -1,6 +1,7 @@
 package br.com.brindex.api
 
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -13,14 +14,21 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonUnquotedLiteral
 
+private val JSON_NUMBER = Regex("""-?\d+(\.\d+)?([eE][+-]?\d+)?""")
+private val ISO_DATE = Regex("""\d{4}-\d{2}-\d{2}""")
+
 /**
  * Writes a decimal string as a raw, unquoted JSON number token — never via Double/Float — so the
  * exact digits stored in SQLite (see CLAUDE.md's decimal discipline) round-trip byte-for-byte.
+ * Validates the stored text actually looks like a JSON number first: `points.value` is an
+ * unconstrained SQLite TEXT column, and splicing arbitrary text in unescaped/unvalidated would let
+ * a malformed row (e.g. an empty string, or stray JSON-structural characters) corrupt the response
+ * body while still returning 200. An invalid value throws instead, which the installed StatusPages
+ * handler turns into a clean 500.
  */
 object RawJsonNumberSerializer : KSerializer<String?> {
     override val descriptor = PrimitiveSerialDescriptor("RawJsonNumber", PrimitiveKind.STRING)
@@ -28,29 +36,61 @@ object RawJsonNumberSerializer : KSerializer<String?> {
     @OptIn(ExperimentalSerializationApi::class)
     override fun serialize(encoder: Encoder, value: String?) {
         require(encoder is JsonEncoder) { "RawJsonNumberSerializer only supports JSON output" }
-        encoder.encodeJsonElement(if (value == null) JsonNull else JsonUnquotedLiteral(value))
+        if (value == null) {
+            encoder.encodeJsonElement(JsonNull)
+            return
+        }
+        check(JSON_NUMBER.matches(value)) { "stored value '$value' is not valid JSON-number text" }
+        encoder.encodeJsonElement(JsonUnquotedLiteral(value))
     }
 
     override fun deserialize(decoder: Decoder): String? =
         throw UnsupportedOperationException("read-only API: deserialization not supported")
 }
 
-private fun parseJsonOrNull(raw: String?): JsonElement =
-    raw?.let { Json.parseToJsonElement(it) } ?: JsonNull
+/**
+ * Writes a JSON-object/array blob (`series.metadata`, `points.extra_values` — opaque JSON TEXT
+ * columns) as a raw, unquoted literal, byte-for-byte as stored. This is deliberately NOT
+ * `Json.parseToJsonElement(...)` re-embedded as a `JsonElement` field: kotlinx.serialization's
+ * generic `JsonElement` machinery materializes any *unquoted* nested numeric literal as a `Double`
+ * on parse, and re-serializes that `Double` (verified: `18094.980` -> `18094.98`, `1E2` -> `100.0`,
+ * high-precision decimals truncated to ~16 significant digits) — silently violating the same
+ * decimal discipline `RawJsonNumberSerializer` exists to protect for `value`. Parsing here is only
+ * to validate the stored text is well-formed JSON (so a malformed blob throws a clear error via
+ * StatusPages instead of corrupting the response); the parsed tree itself is discarded and never
+ * re-serialized.
+ */
+object RawJsonBlobSerializer : KSerializer<String?> {
+    override val descriptor = PrimitiveSerialDescriptor("RawJsonBlob", PrimitiveKind.STRING)
+
+    @OptIn(ExperimentalSerializationApi::class)
+    override fun serialize(encoder: Encoder, value: String?) {
+        require(encoder is JsonEncoder) { "RawJsonBlobSerializer only supports JSON output" }
+        if (value == null) {
+            encoder.encodeJsonElement(JsonNull)
+            return
+        }
+        Json.parseToJsonElement(value)
+        encoder.encodeJsonElement(JsonUnquotedLiteral(value))
+    }
+
+    override fun deserialize(decoder: Decoder): String? =
+        throw UnsupportedOperationException("read-only API: deserialization not supported")
+}
 
 @Serializable
 data class SeriesDto(
     val code: String,
     val domain: String,
     val name: String,
-    val metadata: JsonElement
+    @Serializable(with = RawJsonBlobSerializer::class) val metadata: String?
 )
 
 @Serializable
 data class PointDto(
     val date: String,
     @Serializable(with = RawJsonNumberSerializer::class) val value: String?,
-    val extra_values: JsonElement,
+    @Serializable(with = RawJsonBlobSerializer::class) val extra_values: String?,
     val source_updated_at: String
 )
 
@@ -61,15 +101,19 @@ private fun SeriesRow.toDto() = SeriesDto(
     code = code,
     domain = domain,
     name = name,
-    metadata = parseJsonOrNull(metadata)
+    metadata = metadata
 )
 
 private fun PointRow.toDto() = PointDto(
     date = date,
     value = value,
-    extra_values = parseJsonOrNull(extraValues),
+    extra_values = extraValues,
     source_updated_at = sourceUpdatedAt
 )
+
+private suspend fun ApplicationCall.respondSeriesNotFound() {
+    respond(HttpStatusCode.NotFound, ErrorDto("series not found"))
+}
 
 fun Route.seriesRoutes(repo: SeriesRepository) {
     get("/series") {
@@ -79,24 +123,35 @@ fun Route.seriesRoutes(repo: SeriesRepository) {
 
     get("/series/{code}/points") {
         val code = call.parameters["code"]!!
-        if (!repo.seriesExists(code)) {
-            call.respond(HttpStatusCode.NotFound, ErrorDto("series not found"))
-            return@get
-        }
         val since = call.request.queryParameters["since"]
         val until = call.request.queryParameters["until"]
-        call.respond(repo.listPoints(code, since, until).map { it.toDto() })
+        if (since != null && !ISO_DATE.matches(since)) {
+            call.respond(HttpStatusCode.BadRequest, ErrorDto("since must be YYYY-MM-DD"))
+            return@get
+        }
+        if (until != null && !ISO_DATE.matches(until)) {
+            call.respond(HttpStatusCode.BadRequest, ErrorDto("until must be YYYY-MM-DD"))
+            return@get
+        }
+        // Query first, check existence only to disambiguate an empty result (unknown code vs a
+        // known code with no points in range) — avoids a second round trip on the common path.
+        val points = repo.listPoints(code, since, until)
+        if (points.isEmpty() && !repo.seriesExists(code)) {
+            call.respondSeriesNotFound()
+            return@get
+        }
+        call.respond(points.map { it.toDto() })
     }
 
     get("/series/{code}/points/latest") {
         val code = call.parameters["code"]!!
-        if (!repo.seriesExists(code)) {
-            call.respond(HttpStatusCode.NotFound, ErrorDto("series not found"))
-            return@get
-        }
         val point = repo.latestPoint(code)
         if (point == null) {
-            call.respond(HttpStatusCode.NotFound, ErrorDto("no points for series"))
+            if (!repo.seriesExists(code)) {
+                call.respondSeriesNotFound()
+            } else {
+                call.respond(HttpStatusCode.NotFound, ErrorDto("no points for series"))
+            }
             return@get
         }
         call.respond(point.toDto())

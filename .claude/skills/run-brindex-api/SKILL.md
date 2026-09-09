@@ -88,8 +88,8 @@ URL-encoded in requests: `TD%3ALFT%3A2026-03-01%3ABUY`.
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `BRINDEX_DB_PATH` | No | `brindex.sqlite` (relative to CWD) | Path to the SQLite file `brindex-ingest` writes. Must already have `series`/`points` tables — this API never creates them. |
-| `PORT` | No | `8080` | Hardcoded in `Application.kt`'s `embeddedServer` call — not currently read from env; the smoke script's `PORT` var only affects which port it polls, not what the server binds to. |
+| `BRINDEX_DB_PATH` | No | `brindex.sqlite` (relative to CWD) | Path to the SQLite file `brindex-ingest` writes. Must already have `series`/`points` tables — this API never creates them, and fails fast at startup (not on first request) if they're missing. |
+| `PORT` | No | `8080` | Read via `System.getenv("PORT")` in `Application.kt`'s `main()`. A set-but-invalid value (non-numeric, or outside 1-65535) fails startup loudly rather than silently falling back to `8080`. |
 
 ## Run (human path)
 
@@ -103,8 +103,9 @@ URL-encoded in requests: `TD%3ALFT%3A2026-03-01%3ABUY`.
 ./gradlew test
 ```
 
-12 tests in `SeriesRoutesTest` (fixture-DB-backed contract tests for all
-three data endpoints) plus 1 in `ApplicationTest` (`/health`) — all pass.
+16 tests in `SeriesRoutesTest` (fixture-DB-backed contract tests for all
+three data endpoints, including malformed-input and malformed-stored-data
+error paths) plus 1 in `ApplicationTest` (`/health`) — all pass.
 
 ---
 
@@ -130,9 +131,13 @@ three data endpoints) plus 1 in `ApplicationTest` (`/health`) — all pass.
   `/health` before curling anything else — the JVM takes a few seconds to
   start even after Gradle itself returns control.
 - **Killing the server**: `$!` right after `./gradlew run &` is the
-  `gradlew` wrapper's PID, not the JVM's, and `kill`ing it alone can leave
-  the actual server process (and port `8080`) running. Kill by port instead
-  (`lsof -ti:8080 -sTCP:LISTEN | xargs -r kill`), as the smoke script does.
+  `gradlew` wrapper's PID, not the JVM's — `kill`ing it alone can leave the
+  actual server process (and port `8080`) running. Kill by port instead:
+  `lsof -ti:8080 -sTCP:LISTEN | xargs -r kill`. Careful with this if
+  something else might be using that port — it kills whatever's listening,
+  not specifically your instance. `smoke.sh` narrows this by capturing the
+  listening PID right after its own health check confirms it's up, rather
+  than blindly querying the port again at cleanup time.
 - **A native-access warning is normal and harmless**: sqlite-jdbc triggers
   `WARNING: A restricted method in java.lang.System has been called ...
   org.sqlite.SQLiteJDBCLoader`. It doesn't affect behavior; ignore it.

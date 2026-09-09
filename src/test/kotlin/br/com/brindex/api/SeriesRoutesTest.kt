@@ -180,4 +180,51 @@ class SeriesRoutesTest {
         assertEquals(HttpStatusCode.NotFound, response.status)
         assertEquals("""{"error":"no points for series"}""", response.bodyAsText())
     }
+
+    @Test
+    fun `points rejects a malformed since date with 400`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points?since=2026-1-5")
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assertEquals("""{"error":"since must be YYYY-MM-DD"}""", response.bodyAsText())
+    }
+
+    @Test
+    fun `points rejects a malformed until date with 400`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points?until=not-a-date")
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assertEquals("""{"error":"until must be YYYY-MM-DD"}""", response.bodyAsText())
+    }
+
+    @Test
+    fun `a non-numeric stored value fails as a clean 500 instead of corrupting the response`() = testApplication {
+        DriverManager.getConnection("jdbc:sqlite:${dbFile.absolutePath}").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    "INSERT INTO points (series_code, date, value, extra_values, source_updated_at) VALUES " +
+                        "('TD:LFT:2026-03-01:BUY', '2026-02-01', 'not-a-number', NULL, '2026-09-09T00:00:00Z')"
+                )
+            }
+        }
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points/latest")
+        assertEquals(HttpStatusCode.InternalServerError, response.status)
+        assertTrue(response.bodyAsText().contains("not valid JSON-number text"))
+    }
+
+    @Test
+    fun `malformed stored metadata fails as a clean 500 instead of a bare crash`() = testApplication {
+        DriverManager.getConnection("jdbc:sqlite:${dbFile.absolutePath}").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    "INSERT INTO series (code, domain, name, metadata, created_at) VALUES " +
+                        "('BAD:METADATA', 'cdi', 'bad', '{not valid json', '2026-09-09T00:00:00Z')"
+                )
+            }
+        }
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/series")
+        assertEquals(HttpStatusCode.InternalServerError, response.status)
+    }
 }
