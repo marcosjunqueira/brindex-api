@@ -22,6 +22,10 @@ Early scaffold. See [`.specs/`](.specs/) for the design.
 
 Health check: `GET /health` → `ok`.
 
+## Guides
+
+- [Configuring Portfolio Performance to use brindex-api](docs/PORTFOLIO_PERFORMANCE.md)
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
