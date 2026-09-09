@@ -15,16 +15,15 @@ fun main() {
     embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module).start(wait = true)
 }
 
-fun Application.module() {
+fun Application.module(dbPath: String = System.getenv("BRINDEX_DB_PATH") ?: "brindex.sqlite") {
     install(ContentNegotiation) {
         json()
     }
+    val repo = SeriesRepository(dbPath)
     routing {
         get("/health") {
             call.respondText("ok")
         }
-        // TODO: GET /series?domain=
-        // TODO: GET /series/{code}/points?since=&until=
-        // TODO: GET /series/{code}/points/latest
+        seriesRoutes(repo)
     }
 }
