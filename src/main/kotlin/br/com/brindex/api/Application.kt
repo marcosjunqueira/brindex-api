@@ -8,12 +8,14 @@ import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.runBlocking
+import java.net.URI
 
 fun main() {
     val portEnv = System.getenv("PORT")
@@ -26,7 +28,32 @@ fun main() {
     embeddedServer(Netty, port = port, host = "0.0.0.0", module = Application::module).start(wait = true)
 }
 
-fun Application.module(dbPath: String = System.getenv("BRINDEX_DB_PATH") ?: "brindex.sqlite") {
+// Comma-separated origins from CORS_ALLOWED_ORIGINS, e.g. "http://localhost:5174,https://a.b".
+// Blank/unset yields an empty list, which means CORS stays off (see module() below).
+fun parseCorsOrigins(raw: String?): List<String> =
+    raw.orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }
+
+fun Application.module(
+    dbPath: String = System.getenv("BRINDEX_DB_PATH") ?: "brindex.sqlite",
+    corsAllowedOrigins: List<String> = parseCorsOrigins(System.getenv("CORS_ALLOWED_ORIGINS")),
+) {
+    if (corsAllowedOrigins.isNotEmpty()) {
+        install(CORS) {
+            corsAllowedOrigins.forEach { origin ->
+                val uri = runCatching { URI(origin) }.getOrNull()
+                val scheme = uri?.scheme
+                val host = uri?.host
+                if (scheme == null || host == null) {
+                    error(
+                        "CORS_ALLOWED_ORIGINS entry '$origin' is not a full origin " +
+                            "(scheme://host[:port]), e.g. http://localhost:5174"
+                    )
+                }
+                val hostAndPort = if (uri.port == -1) host else "$host:${uri.port}"
+                allowHost(hostAndPort, schemes = listOf(scheme))
+            }
+        }
+    }
     install(ContentNegotiation) {
         json()
     }
