@@ -23,8 +23,8 @@ fun Application.module() {
         get("/health") {
             call.respondText("ok")
         }
-        // TODO: GET /series?dominio=
-        // TODO: GET /series/{codigo}/pontos?de=&ate=
-        // TODO: GET /series/{codigo}/pontos/ultimo
+        // TODO: GET /series?domain=
+        // TODO: GET /series/{code}/points?since=&until=
+        // TODO: GET /series/{code}/points/latest
     }
 }
