@@ -2,9 +2,10 @@
 
 [Portfolio Performance](https://www.portfolio-performance.info/) can pull a security's price
 history from a generic JSON feed. This documents how to point it at `brindex-api` instead of an
-external webhook, using the `GET /series/{code}/points` and `GET /series/{code}/points/latest`
-endpoints from [`SPEC_READ_API.md`](../.specs/New/SPEC_READ_API.md) (or wherever it has landed in
-the `.specs/` lifecycle by the time you read this).
+external webhook, using the `GET /series/{...code segments}/points` and
+`GET /series/{...code segments}/points/latest` endpoints from
+[`SPEC_READ_API.md`](../.specs/New/SPEC_READ_API.md) (or wherever it has landed in the `.specs/`
+lifecycle by the time you read this).
 
 ## Prerequisites
 
@@ -24,12 +25,16 @@ the `.specs/` lifecycle by the time you read this).
   redeeming today — is normally the right one to use; use **BUY** instead if you specifically want
   to track the price you'd pay to invest.
 
+  The API takes `code` as one path segment per `:`-separated part rather than a single
+  `:`-joined, URL-encoded token — `TD:LFT:2031-03-01:SELL` becomes `TD/LFT/2031-03-01/SELL` in
+  the feed URL below (see `SPEC_READ_API.md` §3.1).
+
 ## Historical Quotes tab
 
 | Field | Value |
 |---|---|
 | Provider | `JSON` |
-| Feed URL | `http://localhost:8080/series/<code>/points` (URL-encode `:` in `<code>` as `%3A`, e.g. `TD%3ALFT%3A2031-03-01%3ASELL`) |
+| Feed URL | `http://localhost:8080/series/<code segments>/points` (one path segment per `:`-separated part of `code`, e.g. `TD/LFT/2031-03-01/SELL`) |
 | Date path | `$[*].date` |
 | Date format | `yyyy-MM-dd` |
 | Date timezone | irrelevant — `date` carries no time component |
@@ -39,7 +44,8 @@ the `.specs/` lifecycle by the time you read this).
 
 `GET /points` already scopes to the one series in the URL path, so there's no need for a filter
 expression like `$[?(@.Simbolo == '...')]` the way a feed mixing multiple securities in one
-response would need — every element of the returned array belongs to `<code>`.
+response would need — every element of the returned array belongs to the series named by
+`<code segments>`.
 
 ## Last Quote tab
 
@@ -48,7 +54,7 @@ loses the `[*]`:
 
 | Field | Value |
 |---|---|
-| Feed URL | `http://localhost:8080/series/<code>/points/latest` |
+| Feed URL | `http://localhost:8080/series/<code segments>/points/latest` |
 | Date path | `$.date` |
 | Date format | `yyyy-MM-dd` |
 | Closing price path | `$.value` |
@@ -59,7 +65,7 @@ Use Portfolio Performance's own "Show server response" button in the feed editor
 feed yourself first:
 
 ```bash
-curl -sS "http://localhost:8080/series/TD%3ALFT%3A2031-03-01%3ASELL/points/latest"
+curl -sS "http://localhost:8080/series/TD/LFT/2031-03-01/SELL/points/latest"
 # -> {"date":"2026-08-21","value":19638.10,"extra_values":{...},"source_updated_at":"..."}
 ```
 
@@ -94,6 +100,6 @@ in Portfolio Performance looks stale, that's a `brindex-ingest` data-freshness q
 something to fix here. Check a series' actual range directly:
 
 ```bash
-curl -sS "http://localhost:8080/series/<code>/points" | python3 -c \
+curl -sS "http://localhost:8080/series/<code segments>/points" | python3 -c \
   "import json,sys; p=json.load(sys.stdin); print(p[0]['date'], '..', p[-1]['date'], f'({len(p)} points)')"
 ```

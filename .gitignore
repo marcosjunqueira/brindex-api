@@ -10,3 +10,6 @@ out/
 
 # OS
 .DS_Store
+
+# Local env config (copy .env.example)
+.env

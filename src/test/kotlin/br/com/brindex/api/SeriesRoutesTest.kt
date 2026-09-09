@@ -102,7 +102,7 @@ class SeriesRoutesTest {
     @Test
     fun `points returns all points in date order for unfiltered range`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points")
+        val response = client.get("/series/TD/LFT/2026-03-01/BUY/points")
         assertEquals(HttpStatusCode.OK, response.status)
         val body = response.bodyAsText()
         val firstIndex = body.indexOf("2026-01-02")
@@ -113,9 +113,44 @@ class SeriesRoutesTest {
     }
 
     @Test
+    fun `a two-part code like PTAX routes correctly through the shared tail segment`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/series/PTAX/USD/SELL/points")
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertTrue(response.bodyAsText().contains("2026-01-02"))
+    }
+
+    @Test
+    fun `a bare domain with no identifier segments returns 404 instead of 500`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/series/points")
+        assertEquals(HttpStatusCode.NotFound, response.status)
+    }
+
+    @Test
+    fun `a code path with no recognized points or points-latest suffix returns 404`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/series/TD/LFT/2026-03-01/BUY")
+        assertEquals(HttpStatusCode.NotFound, response.status)
+    }
+
+    @Test
+    fun `the old percent-encoded single-segment code happens to still resolve, undocumented`() =
+        testApplication {
+            // Ktor decodes a path segment before routing sees it, so a single segment whose
+            // decoded value already contains ':' rejoins to itself as a no-op — this is incidental
+            // (see SPEC_READ_API.md §3.1), not a guaranteed compatibility path, but a regression
+            // here would be a silent behavior change worth catching.
+            application { module(dbPath = dbFile.absolutePath) }
+            val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points")
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(response.bodyAsText().contains("2026-01-02"))
+        }
+
+    @Test
     fun `points respects since and until boundaries inclusively`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points?since=2026-01-05&until=2026-01-05")
+        val response = client.get("/series/TD/LFT/2026-03-01/BUY/points?since=2026-01-05&until=2026-01-05")
         assertEquals(HttpStatusCode.OK, response.status)
         val body = response.bodyAsText()
         assertTrue(body.contains("2026-01-05"))
@@ -126,7 +161,7 @@ class SeriesRoutesTest {
     @Test
     fun `points for unknown code returns 404`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/DOES%3ANOT%3AEXIST/points")
+        val response = client.get("/series/DOES/NOT/EXIST/points")
         assertEquals(HttpStatusCode.NotFound, response.status)
         assertEquals("""{"error":"series not found"}""", response.bodyAsText())
     }
@@ -134,7 +169,7 @@ class SeriesRoutesTest {
     @Test
     fun `points preserves exact decimal precision without float drift`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points")
+        val response = client.get("/series/TD/LFT/2026-03-01/BUY/points")
         val body = response.bodyAsText()
         assertTrue(body.contains("\"value\":1234.5678901234"))
     }
@@ -142,7 +177,7 @@ class SeriesRoutesTest {
     @Test
     fun `points keeps null extra_values as JSON null, not omitted`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/PTAX%3AUSD%3ASELL/points")
+        val response = client.get("/series/PTAX/USD/SELL/points")
         val body = response.bodyAsText()
         assertTrue(body.contains("\"extra_values\":null"))
     }
@@ -150,7 +185,7 @@ class SeriesRoutesTest {
     @Test
     fun `points keeps null value as JSON null, not zero or omitted`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/PTAX%3AUSD%3ASELL/points")
+        val response = client.get("/series/PTAX/USD/SELL/points")
         val body = response.bodyAsText()
         assertTrue(body.contains("\"value\":null"))
     }
@@ -158,7 +193,7 @@ class SeriesRoutesTest {
     @Test
     fun `points latest returns most recent point`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points/latest")
+        val response = client.get("/series/TD/LFT/2026-03-01/BUY/points/latest")
         assertEquals(HttpStatusCode.OK, response.status)
         val body = response.bodyAsText()
         assertTrue(body.contains("\"date\":\"2026-01-06\""))
@@ -168,7 +203,7 @@ class SeriesRoutesTest {
     @Test
     fun `points latest for unknown code returns 404`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/DOES%3ANOT%3AEXIST/points/latest")
+        val response = client.get("/series/DOES/NOT/EXIST/points/latest")
         assertEquals(HttpStatusCode.NotFound, response.status)
         assertEquals("""{"error":"series not found"}""", response.bodyAsText())
     }
@@ -176,7 +211,7 @@ class SeriesRoutesTest {
     @Test
     fun `points latest for series with no points returns 404`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/CDI%3ASGS%3A4391/points/latest")
+        val response = client.get("/series/CDI/SGS/4391/points/latest")
         assertEquals(HttpStatusCode.NotFound, response.status)
         assertEquals("""{"error":"no points for series"}""", response.bodyAsText())
     }
@@ -184,7 +219,7 @@ class SeriesRoutesTest {
     @Test
     fun `points rejects a malformed since date with 400`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points?since=2026-1-5")
+        val response = client.get("/series/TD/LFT/2026-03-01/BUY/points?since=2026-1-5")
         assertEquals(HttpStatusCode.BadRequest, response.status)
         assertEquals("""{"error":"since must be YYYY-MM-DD"}""", response.bodyAsText())
     }
@@ -192,7 +227,7 @@ class SeriesRoutesTest {
     @Test
     fun `points rejects a malformed until date with 400`() = testApplication {
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points?until=not-a-date")
+        val response = client.get("/series/TD/LFT/2026-03-01/BUY/points?until=not-a-date")
         assertEquals(HttpStatusCode.BadRequest, response.status)
         assertEquals("""{"error":"until must be YYYY-MM-DD"}""", response.bodyAsText())
     }
@@ -208,7 +243,7 @@ class SeriesRoutesTest {
             }
         }
         application { module(dbPath = dbFile.absolutePath) }
-        val response = client.get("/series/TD%3ALFT%3A2026-03-01%3ABUY/points/latest")
+        val response = client.get("/series/TD/LFT/2026-03-01/BUY/points/latest")
         assertEquals(HttpStatusCode.InternalServerError, response.status)
         assertTrue(response.bodyAsText().contains("not valid JSON-number text"))
     }
