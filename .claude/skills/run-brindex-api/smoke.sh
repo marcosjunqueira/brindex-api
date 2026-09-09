@@ -34,7 +34,7 @@ CREATE TABLE series (
 CREATE TABLE points (
   series_code   TEXT NOT NULL REFERENCES series(code),
   date          TEXT NOT NULL,
-  value         TEXT NOT NULL,
+  value         TEXT,
   extra_values  TEXT,
   source_updated_at TEXT NOT NULL,
   PRIMARY KEY (series_code, date)

@@ -37,7 +37,7 @@ class SeriesRoutesTest {
                     CREATE TABLE points (
                         series_code TEXT NOT NULL REFERENCES series(code),
                         date TEXT NOT NULL,
-                        value TEXT NOT NULL,
+                        value TEXT,
                         extra_values TEXT,
                         source_updated_at TEXT NOT NULL,
                         PRIMARY KEY (series_code, date)
@@ -58,7 +58,7 @@ class SeriesRoutesTest {
                     ('TD:LFT:2026-03-01:BUY', '2026-01-02', '18105.30', '{"rate":"0.000164","base_price":"18094.98"}', '2026-09-09T00:00:00Z'),
                     ('TD:LFT:2026-03-01:BUY', '2026-01-05', '18115.38', '{"rate":"0.000134","base_price":"18105.04"}', '2026-09-09T00:00:00Z'),
                     ('TD:LFT:2026-03-01:BUY', '2026-01-06', '1234.5678901234', NULL, '2026-09-09T00:00:00Z'),
-                    ('PTAX:USD:SELL', '2026-01-02', '5.4321', NULL, '2026-09-09T00:00:00Z')
+                    ('PTAX:USD:SELL', '2026-01-02', NULL, NULL, '2026-09-09T00:00:00Z')
                     """.trimIndent()
                 )
             }
@@ -145,6 +145,14 @@ class SeriesRoutesTest {
         val response = client.get("/series/PTAX%3AUSD%3ASELL/points")
         val body = response.bodyAsText()
         assertTrue(body.contains("\"extra_values\":null"))
+    }
+
+    @Test
+    fun `points keeps null value as JSON null, not zero or omitted`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/series/PTAX%3AUSD%3ASELL/points")
+        val body = response.bodyAsText()
+        assertTrue(body.contains("\"value\":null"))
     }
 
     @Test

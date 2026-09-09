@@ -119,12 +119,13 @@ three data endpoints) plus 1 in `ApplicationTest` (`/health`) — all pass.
   server writes the SQLite `TEXT` column's exact digits as an unquoted JSON
   literal, never passing through `Double`/`Float`. Don't "fix" a test that
   expects an unquoted number thinking it's a bug.
-- **`points.value` is `NOT NULL` in the real schema**, even though the spec
-  doc talks about a possibly-missing `value`. A real fixture/DB can't have a
-  `NULL` `value`; only `extra_values`/`metadata` can be `NULL` in practice.
-  If you're writing a fixture DB by hand, don't insert `NULL` into
-  `points.value` — SQLite will reject it with
-  `SQLITE_CONSTRAINT_NOTNULL`.
+- **`points.value` can legitimately be `NULL`** (a missing/malformed source
+  value, per spec §6/§7) — `brindex-ingest` had a bug where its schema
+  declared `value TEXT NOT NULL`, contradicting its own spec; fixed
+  upstream, so any DB regenerated from a current `brindex-ingest` allows
+  `NULL` there. If you hit `SQLITE_CONSTRAINT_NOTNULL` inserting a `NULL`
+  `value` into a hand-built fixture, your `CREATE TABLE points` is stale —
+  drop the `NOT NULL` on that column.
 - **`./gradlew run` blocks the shell.** Always background it (`&`) and poll
   `/health` before curling anything else — the JVM takes a few seconds to
   start even after Gradle itself returns control.
