@@ -18,7 +18,18 @@ cp .env.example .env   # set BRINDEX_DB_PATH to a database brindex-ingest has al
 ```
 
 The server listens on `:8080` by default (`PORT` env var to override) and fails fast at startup if
-`BRINDEX_DB_PATH` doesn't point at a database with the `series`/`points` tables already created.
+`BRINDEX_DB_PATH` doesn't point at an existing database with the `series`/`points` tables already
+created. The database is opened read-only, and a read that hits `brindex-ingest`'s write lock waits
+up to 5 seconds before failing.
+
+On `SIGTERM` the server stops accepting connections and gives in-flight requests up to 5 seconds to
+finish.
+
+## Request IDs and logging
+
+Every response carries an `X-Request-Id` header. A client-supplied `X-Request-Id` (1–64 characters
+of `A-Z a-z 0-9 . _ -`) is reused; otherwise a UUID is generated. Each request is logged with its
+id, so a `500` can be matched to its server-side stack trace.
 
 ## Authentication
 
@@ -56,6 +67,15 @@ per domain.
 Liveness check. Never touches the database.
 
 **Response:** `200 OK`, body `ok` (plain text).
+
+---
+
+### `GET /ready`
+
+Readiness check. Runs a trivial query against the database.
+
+**Response:** `200 OK`, body `ok` (plain text), or `503 Service Unavailable` with
+`{"error": "database unavailable"}` when the database can't be read.
 
 ---
 
@@ -127,7 +147,10 @@ Historical points for one series, optionally restricted to a date range.
 | Status | Body                                | When                                      |
 | ------ | ------------------------------------ | ------------------------------------------ |
 | `400`  | `{"error": "since must be YYYY-MM-DD"}` (or `until`) | a date query param isn't in `YYYY-MM-DD` form |
+| `400`  | `{"error": "range has more than N points; narrow it with since/until"}` | the range holds more than `POINTS_MAX_ROWS` points (default 100000) |
 | `404`  | `{"error": "series not found"}`      | no series exists with that `code`          |
+
+An over-limit range is rejected rather than truncated, so a `200` always carries the complete range.
 
 An unknown `code` with valid/absent date params returns `404`, not `200` with an empty array — an
 empty array only ever means "this series exists but has no points in the requested range."
@@ -180,7 +203,8 @@ Every non-2xx response (including an unhandled server-side failure) is a JSON ob
 ```
 
 An unhandled exception (a malformed stored JSON blob, a missing table, etc.) is caught by a global
-handler and returned as `500` in this same shape, rather than Ktor's default bare error response.
+handler and returned as `500` with the fixed body `{"error": "internal error"}`. The cause is only
+logged server-side (with the request id), never sent to the client.
 
 ## Decimal and JSON discipline
 

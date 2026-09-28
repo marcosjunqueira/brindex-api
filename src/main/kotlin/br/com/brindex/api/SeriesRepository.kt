@@ -2,6 +2,8 @@ package br.com.brindex.api
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.sqlite.SQLiteConfig
+import java.io.File
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.ResultSet
@@ -32,12 +34,25 @@ data class PointRow(
  */
 class SeriesRepository(private val dbPath: String) {
 
-    private fun connect(): Connection = DriverManager.getConnection("jdbc:sqlite:$dbPath")
+    // Read-only: this API never writes, and a read-only open also means a wrong path fails
+    // instead of silently creating an empty database file. busy_timeout makes a read that hits
+    // brindex-ingest's write lock wait briefly instead of failing at once with SQLITE_BUSY.
+    private val connectionProperties = SQLiteConfig().apply {
+        setReadOnly(true)
+        busyTimeout = BUSY_TIMEOUT_MS
+    }.toProperties()
+
+    private fun connect(): Connection =
+        DriverManager.getConnection("jdbc:sqlite:$dbPath", connectionProperties)
 
     /** Fails fast with a clear message if `dbPath` doesn't point at a database with the expected
      * tables — called once at startup so a missing/wrong DB is a loud, immediate failure instead
      * of every route silently 500ing later while `/health` keeps reporting the process is fine. */
     suspend fun verifySchema() = withContext(Dispatchers.IO) {
+        check(File(dbPath).isFile) {
+            "database file '$dbPath' does not exist — " +
+                "point BRINDEX_DB_PATH at a database brindex-ingest has already populated"
+        }
         connect().use { conn ->
             val tables = buildSet {
                 conn.metaData.getTables(null, null, "series", null).use { rs -> if (rs.next()) add("series") }
@@ -47,6 +62,13 @@ class SeriesRepository(private val dbPath: String) {
                 "database at '$dbPath' is missing the 'series'/'points' tables — " +
                     "point BRINDEX_DB_PATH at a database brindex-ingest has already populated"
             }
+        }
+    }
+
+    /** Cheap query used by the readiness check; throws if the database can't be read. */
+    suspend fun ping() = withContext(Dispatchers.IO) {
+        connect().use { conn ->
+            conn.prepareStatement("SELECT 1 FROM series LIMIT 1").use { stmt -> stmt.executeQuery().close() }
         }
     }
 
@@ -86,7 +108,8 @@ class SeriesRepository(private val dbPath: String) {
         }
     }
 
-    suspend fun listPoints(code: String, since: String?, until: String?): List<PointRow> =
+    /** Returns at most [limit] points, oldest first. */
+    suspend fun listPoints(code: String, since: String?, until: String?, limit: Int): List<PointRow> =
         withContext(Dispatchers.IO) {
             connect().use { conn ->
                 val conditions = buildString {
@@ -95,12 +118,13 @@ class SeriesRepository(private val dbPath: String) {
                     if (until != null) append(" AND date <= ?")
                 }
                 val sql = "SELECT date, value, extra_values, source_updated_at FROM points " +
-                    "WHERE $conditions ORDER BY date"
+                    "WHERE $conditions ORDER BY date LIMIT ?"
                 conn.prepareStatement(sql).use { stmt ->
                     var index = 1
                     stmt.setString(index++, code)
                     if (since != null) stmt.setString(index++, since)
-                    if (until != null) stmt.setString(index, until)
+                    if (until != null) stmt.setString(index++, until)
+                    stmt.setInt(index, limit)
                     stmt.executeQuery().use { rs -> rs.mapPoints() }
                 }
             }
@@ -115,6 +139,10 @@ class SeriesRepository(private val dbPath: String) {
                 stmt.executeQuery().use { rs -> rs.mapPoints().firstOrNull() }
             }
         }
+    }
+
+    private companion object {
+        const val BUSY_TIMEOUT_MS = 5_000
     }
 
     private fun ResultSet.mapPoints(): List<PointRow> = buildList {

@@ -117,7 +117,7 @@ private suspend fun ApplicationCall.respondSeriesNotFound() {
 
 private fun List<String>.toSeriesCode(): String = joinToString(":")
 
-fun Route.seriesRoutes(repo: SeriesRepository) {
+fun Route.seriesRoutes(repo: SeriesRepository, pointsMaxRows: Int) {
     get("/series") {
         val domain = call.request.queryParameters["domain"]
         call.respond(repo.listSeries(domain).map { it.toDto() })
@@ -180,9 +180,18 @@ fun Route.seriesRoutes(repo: SeriesRepository) {
         }
         // Query first, check existence only to disambiguate an empty result (unknown code vs a
         // known code with no points in range) — avoids a second round trip on the common path.
-        val points = repo.listPoints(code, since, until)
+        // Fetch one row past the cap so an over-limit range is rejected outright instead of
+        // being silently truncated (a truncated series would look complete to the caller).
+        val points = repo.listPoints(code, since, until, limit = pointsMaxRows + 1)
         if (points.isEmpty() && !repo.seriesExists(code)) {
             call.respondSeriesNotFound()
+            return@get
+        }
+        if (points.size > pointsMaxRows) {
+            call.respond(
+                HttpStatusCode.BadRequest,
+                ErrorDto("range has more than $pointsMaxRows points; narrow it with since/until")
+            )
             return@get
         }
         call.respond(points.map { it.toDto() })
