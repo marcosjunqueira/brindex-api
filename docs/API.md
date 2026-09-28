@@ -34,8 +34,32 @@ id, so a `500` can be matched to its server-side stack trace.
 
 ## Authentication
 
-None. This API is for personal use on a private network — do not expose it to the public internet
-without adding an auth layer of your own.
+Off by default: with `REQUIRE_API_KEY` unset the data endpoints are open, which is only safe on a
+private network.
+
+With `REQUIRE_API_KEY=true`, every `/series...` request needs an active key:
+
+```
+Authorization: Bearer brx_...
+```
+
+Clients that can't set headers (e.g. Portfolio Performance's JSON quote feed) may instead pass
+`?api_key=brx_...` on the URL. The header wins when both are present. A key in a URL can end up in
+browser history and proxy access logs, so only use it over HTTPS and redact `api_key` in your
+reverse proxy's logs; this API itself logs paths only, never query strings.
+
+A missing, unknown, disabled, or unpaid key gets `401` (with `WWW-Authenticate: Bearer`). Each key
+may make `RATE_LIMIT_PER_MINUTE` requests per minute (default 60); over that, `429` with
+`Retry-After`. `/health` and `/ready` never need a key.
+
+The per-key rate limit only applies once a key is accepted. Requests with missing or wrong keys are
+rejected after one indexed lookup, but they are not throttled here: when exposing the API publicly,
+put a per-client-IP limit in the reverse proxy, which knows the real client IP. See
+[`DEPLOY.md`](DEPLOY.md) for the Cloudflare + Traefik setup.
+
+Keys are issued by a separate admin/billing service (Stripe subscription, admin page), never by
+this API, which only reads the accounts database to check them. See
+[`.specs/New/SPEC_API_ACCESS.md`](../.specs/New/SPEC_API_ACCESS.md) for the full flow and setup.
 
 ## Versioning
 
@@ -243,7 +267,8 @@ preserves this on the way out:
 
 ## Non-goals (v1)
 
-- **No authentication.** Personal use, private network only.
+- **No per-endpoint permissions or usage quotas.** A key either has access to every data endpoint or
+  none; the only limit is the per-minute rate limit.
 - **No write endpoints.** All ingestion happens out-of-process in `brindex-ingest`.
 - **No pagination.** `/points` returns the full matching range in one response; this is an open
   question for future large date ranges, not yet designed.
