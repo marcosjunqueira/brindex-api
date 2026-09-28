@@ -117,7 +117,7 @@ error paths) plus 1 in `ApplicationTest` (`/health`) — all pass.
 - **`/health` returns plain text `ok`, not JSON.** Every other endpoint
   returns JSON via kotlinx.serialization (`ContentNegotiation` + `json()`),
   so don't `curl | jq` the health check.
-- **Decimal values come back as bare JSON numbers, not strings** — e.g.
+- **Decimal values come back as bare JSON numbers on the unversioned routes** (`/v1` returns them as strings) — e.g.
   `"value":1234.5678901234`, not `"value":"1234.5678901234"`. This is
   deliberate (see `RawJsonNumberSerializer` in `SeriesRoutes.kt`): the
   server writes the SQLite `TEXT` column's exact digits as an unquoted JSON
