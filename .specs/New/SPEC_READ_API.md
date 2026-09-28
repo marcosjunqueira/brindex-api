@@ -87,9 +87,10 @@ the same code — but this is incidental, not a documented or guaranteed compati
 
 ## 4. Non-goals for v1
 
-- **No authentication.** Personal use only, expected to run on a private network or be reachable
-  only by the user's own `cornerstone-app`. An API-key/rate-limiting layer is an explicit future
-  phase, not designed here.
+- **No authentication by default.** Personal use only, expected to run on a private network or be
+  reachable only by the user's own `cornerstone-app`. The optional API-key/rate-limit/subscription
+  layer is designed separately in [`SPEC_API_ACCESS.md`](SPEC_API_ACCESS.md) and stays off unless
+  `REQUIRE_API_KEY=true`.
 - **No write endpoints.** All ingestion happens in `brindex-ingest`, out of process.
 - **No pagination design yet** for `/points` over multi-year ranges — deferred until real data
   volume makes it necessary to decide.

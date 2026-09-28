@@ -13,3 +13,6 @@ out/
 
 # Local env config (copy .env.example)
 .env
+
+# Local SQLite files (ingest data, accounts with emails and key hashes)
+*.sqlite

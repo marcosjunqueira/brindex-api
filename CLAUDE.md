@@ -59,8 +59,10 @@ Requires JDK 25 (set via Gradle toolchain, no local JDK install needed if using 
   API's serialization layer must preserve this — never coerce a `NULL` price to `0` or drop the
   field; a missing price must stay distinguishable from a zero price. This is the one non-obvious
   invariant worth defending in review for any new endpoint touching `points`.
-- **No auth, no write endpoints** — both explicit non-goals for v1 (personal use, private network).
-  Don't add either speculatively.
+- **No write endpoints, no admin, no billing** in this repo. Optional API-key auth
+  (`REQUIRE_API_KEY=true`) only *reads* a second SQLite file (`ACCOUNTS_DB_PATH`) that a separate
+  admin/billing service owns and writes (see `.specs/New/SPEC_API_ACCESS.md`). This API is public;
+  anything administrative lives in that other service.
 - Tests use Ktor's `testApplication` + a fixture-seeded database, never a live `brindex-ingest` run
   — mirrors the fixture-only discipline `brindex-ingest` uses for its own parser tests.
 

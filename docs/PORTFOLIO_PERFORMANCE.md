@@ -10,8 +10,10 @@ lifecycle by the time you read this).
 ## Prerequisites
 
 - `brindex-api` running and reachable from the machine Portfolio Performance runs on — usually
-  `localhost:8080` when both run on the same machine. The API has no auth (see CLAUDE.md's
-  non-goals), so only expose it on a private network you trust.
+  `localhost:8080` when both run on the same machine.
+- If the server runs with `REQUIRE_API_KEY=true`, append your key to the Feed URL as
+  `?api_key=brx_...`: Portfolio Performance's JSON feed can't send an `Authorization` header.
+  Use `https://` for any non-local server, since the key travels in the URL.
 - The `code` of the security in `brindex-ingest`'s database. List candidates by domain, e.g. for
   Tesouro Direto:
 

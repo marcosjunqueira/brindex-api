@@ -57,6 +57,22 @@ class CorsTest {
     }
 
     @Test
+    fun `preflight allows the Authorization header for API keys`() = testApplication {
+        application {
+            module(dbPath = dbFile.absolutePath, corsAllowedOrigins = listOf("http://localhost:5174"))
+        }
+        val response = client.options("/series") {
+            headers {
+                append(HttpHeaders.Origin, "http://localhost:5174")
+                append(HttpHeaders.AccessControlRequestMethod, "GET")
+                append(HttpHeaders.AccessControlRequestHeaders, "authorization")
+            }
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals("http://localhost:5174", response.headers[HttpHeaders.AccessControlAllowOrigin])
+    }
+
+    @Test
     fun `GET from an allowed origin gets Access-Control-Allow-Origin`() = testApplication {
         application {
             module(dbPath = dbFile.absolutePath, corsAllowedOrigins = listOf("http://localhost:5174"))
