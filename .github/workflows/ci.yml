@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+      # Also validates the Gradle wrapper checksum.
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew build
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: build/reports/tests/
+
+  dependencies:
+    name: Dependency scan
+    # The Gradle dependency graph is submitted by GitHub's automatic dependency submission
+    # (the `submit-gradle` check), which also works on Dependabot and fork PRs where this
+    # workflow's token is read-only. This job only reviews the PR's dependency changes.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Fail when a dependency change introduces a known high/critical vulnerability.
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          retry-on-snapshot-warnings: true
+          retry-on-snapshot-warnings-timeout: 300

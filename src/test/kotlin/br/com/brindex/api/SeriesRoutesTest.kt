@@ -245,7 +245,8 @@ class SeriesRoutesTest {
         application { module(dbPath = dbFile.absolutePath) }
         val response = client.get("/series/TD/LFT/2026-03-01/BUY/points/latest")
         assertEquals(HttpStatusCode.InternalServerError, response.status)
-        assertTrue(response.bodyAsText().contains("not valid JSON-number text"))
+        // The cause is logged server-side only; the client gets a generic body.
+        assertEquals("""{"error":"internal error"}""", response.bodyAsText())
     }
 
     @Test
