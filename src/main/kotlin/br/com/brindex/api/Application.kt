@@ -6,11 +6,12 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.application.install
+import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.callid.CallId
 import io.ktor.server.plugins.callid.callIdMdc
-import io.ktor.server.plugins.callloging.CallLogging
+import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.plugins.statuspages.StatusPages
@@ -40,13 +41,17 @@ fun main() {
         portEnv.toIntOrNull()?.takeIf { it in 1..65535 }
             ?: error("PORT env var '$portEnv' is not a valid TCP port number (1-65535)")
     }
-    // Netty's engine registers its own JVM shutdown hook on start(): on SIGTERM (systemd,
+    // Ktor's embedded server registers a JVM shutdown hook on start(): on SIGTERM (systemd,
     // docker stop) it stops accepting connections and lets in-flight requests finish, bounded by
     // the grace period/timeout set here.
-    embeddedServer(Netty, port = port, host = "0.0.0.0", module = Application::module, configure = {
+    embeddedServer(Netty, configure = {
+        connector {
+            this.port = port
+            host = "0.0.0.0"
+        }
         shutdownGracePeriod = 1_000
         shutdownTimeout = 5_000
-    }).start(wait = true)
+    }, module = Application::module).start(wait = true)
 }
 
 fun parsePointsMaxRows(raw: String?): Int =
