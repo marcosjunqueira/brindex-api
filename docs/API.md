@@ -37,6 +37,21 @@ id, so a `500` can be matched to its server-side stack trace.
 None. This API is for personal use on a private network — do not expose it to the public internet
 without adding an auth layer of your own.
 
+## Versioning
+
+Every data endpoint below exists twice, with the same parameters, errors and ordering:
+
+| Prefix    | `value` in points                    | Use                                      |
+| --------- | ------------------------------------ | ---------------------------------------- |
+| `/v1`     | decimal string, e.g. `"18094.980"`   | New clients. Stable contract.            |
+| _(none)_  | raw JSON number, e.g. `18094.980`    | Existing consumers (Portfolio Performance). Kept as is. |
+
+So `GET /v1/series/PTAX/USD/SELL/points/latest` is the `/v1` form of
+`GET /series/PTAX/USD/SELL/points/latest`. Only `value` differs; `/v1/series` is identical to
+`/series`. `/health` and `/ready` are operational checks and are not versioned.
+
+A breaking change to the `/v1` contract ships as `/v2`, never as an edit to `/v1`.
+
 ## Series `code` identity
 
 Every series has a stable `code` string, canonically `<DOMAIN>:<IDENTIFIER...>`, `:`-joined, e.g.:
@@ -138,9 +153,9 @@ Historical points for one series, optionally restricted to a date range.
 ]
 ```
 
-- `value` is emitted as a raw JSON number, but only ever from the exact decimal digits stored —
-  never round-tripped through `Double`/`Float`. It is `null`, not `0` or omitted, when the source
-  had no price for that date.
+- `value` is emitted as a raw JSON number (unversioned routes) or a decimal string (`/v1`), in both
+  cases from the exact decimal digits stored — never round-tripped through `Double`/`Float`. It is
+  `null`, not `0` or omitted, when the source had no price for that date.
 - `extra_values` is domain-specific opaque JSON (e.g. PU buy/sell alongside a base PU), or `null`.
 
 **Errors**
@@ -160,6 +175,8 @@ empty array only ever means "this series exists but has no points in the request
 
 ```bash
 curl -sS "http://localhost:8080/series/TD/LFT/2026-03-01/BUY/points?since=2026-01-01&until=2026-03-01"
+curl -sS "http://localhost:8080/v1/series/TD/LFT/2026-03-01/BUY/points?since=2026-01-01"
+# /v1 element: {"date":"2026-03-01","value":"18094.98","extra_values":null,...}
 ```
 
 ---
@@ -213,9 +230,11 @@ logged server-side (with the request id), never sent to the client.
 `TEXT`, never as float, specifically to keep round-off out of the historical record. The API
 preserves this on the way out:
 
-- `value` is spliced into the response as a raw JSON number token from the stored string itself —
-  never parsed into a `Double` and re-emitted. High-precision decimals and trailing zeros
-  (`18094.980`) come out exactly as stored, not normalized (`18094.98`).
+- `value` is written from the stored string itself — never parsed into a `Double` and re-emitted.
+  High-precision decimals and trailing zeros (`18094.980`) come out exactly as stored, not
+  normalized (`18094.98`). `/v1` emits it as a JSON string, so a client's JSON parser can't turn it
+  into a float either; the unversioned routes emit it as a raw JSON number token. Either way, a
+  stored value that isn't valid decimal text is a `500`, never passed on.
 - `metadata`/`extra_values` blobs are validated as well-formed JSON and then spliced in verbatim,
   for the same reason: generic JSON parsing would materialize any bare numeric literal inside them
   as a `Double` and silently reformat it on re-serialization.

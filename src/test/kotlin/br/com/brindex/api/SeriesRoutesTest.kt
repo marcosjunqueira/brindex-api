@@ -263,4 +263,37 @@ class SeriesRoutesTest {
         val response = client.get("/series")
         assertEquals(HttpStatusCode.InternalServerError, response.status)
     }
+
+    @Test
+    fun `v1 points emit value as an exact decimal string`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/v1/series/TD/LFT/2026-03-01/BUY/points")
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = response.bodyAsText()
+        assertTrue(body.contains("\"value\":\"18105.30\""))
+        assertTrue(body.contains("\"value\":\"1234.5678901234\""))
+    }
+
+    @Test
+    fun `v1 latest keeps a missing price as null`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/v1/series/PTAX/USD/SELL/points/latest")
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertTrue(response.bodyAsText().contains("\"value\":null"))
+    }
+
+    @Test
+    fun `v1 series and 404s match the unversioned routes`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        assertEquals(client.get("/series").bodyAsText(), client.get("/v1/series").bodyAsText())
+        val missing = client.get("/v1/series/NOPE/X/points")
+        assertEquals(HttpStatusCode.NotFound, missing.status)
+    }
+
+    @Test
+    fun `unversioned points still emit value as a raw JSON number`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val body = client.get("/series/TD/LFT/2026-03-01/BUY/points").bodyAsText()
+        assertTrue(body.contains("\"value\":18105.30"))
+    }
 }

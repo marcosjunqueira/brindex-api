@@ -17,6 +17,7 @@ import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
@@ -128,6 +129,10 @@ fun Application.module(
                 call.respond(HttpStatusCode.ServiceUnavailable, ErrorDto("database unavailable"))
             }
         }
+        // Unversioned routes stay as they are for existing consumers; new clients use /v1.
         seriesRoutes(repo, pointsMaxRows)
+        route("/v1") {
+            seriesRoutes(repo, pointsMaxRows, decimalAsString = true)
+        }
     }
 }

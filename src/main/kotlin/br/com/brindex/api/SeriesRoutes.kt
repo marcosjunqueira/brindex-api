@@ -94,6 +94,19 @@ data class PointDto(
     val source_updated_at: String
 )
 
+/**
+ * `/v1` shape of a point: identical to [PointDto] except `value` is a JSON string holding the
+ * exact stored decimal digits (`"18094.980"`), or `null`. A string can't be misread as a float by
+ * any client JSON parser, unlike the raw number token the unversioned routes emit.
+ */
+@Serializable
+data class PointV1Dto(
+    val date: String,
+    val value: String?,
+    @Serializable(with = RawJsonBlobSerializer::class) val extra_values: String?,
+    val source_updated_at: String
+)
+
 @Serializable
 data class ErrorDto(val error: String)
 
@@ -111,13 +124,27 @@ private fun PointRow.toDto() = PointDto(
     source_updated_at = sourceUpdatedAt
 )
 
+// Same validation as RawJsonNumberSerializer: a malformed stored value is a 500, never passed on.
+private fun PointRow.toV1Dto() = PointV1Dto(
+    date = date,
+    value = value?.also { check(JSON_NUMBER.matches(it)) { "stored value '$it' is not valid decimal text" } },
+    extra_values = extraValues,
+    source_updated_at = sourceUpdatedAt
+)
+
 private suspend fun ApplicationCall.respondSeriesNotFound() {
     respond(HttpStatusCode.NotFound, ErrorDto("series not found"))
 }
 
 private fun List<String>.toSeriesCode(): String = joinToString(":")
 
-fun Route.seriesRoutes(repo: SeriesRepository, pointsMaxRows: Int) {
+/**
+ * Registers the series routes. [decimalAsString] selects the point shape: `false` for the
+ * unversioned routes (`value` as a raw JSON number, kept for existing consumers such as
+ * Portfolio Performance), `true` for `/v1` (`value` as a decimal string).
+ */
+fun Route.seriesRoutes(repo: SeriesRepository, pointsMaxRows: Int, decimalAsString: Boolean = false) {
+
     get("/series") {
         val domain = call.request.queryParameters["domain"]
         call.respond(repo.listSeries(domain).map { it.toDto() })
@@ -164,7 +191,7 @@ fun Route.seriesRoutes(repo: SeriesRepository, pointsMaxRows: Int) {
                 }
                 return@get
             }
-            call.respond(point.toDto())
+            if (decimalAsString) call.respond(point.toV1Dto()) else call.respond(point.toDto())
             return@get
         }
 
@@ -194,6 +221,10 @@ fun Route.seriesRoutes(repo: SeriesRepository, pointsMaxRows: Int) {
             )
             return@get
         }
-        call.respond(points.map { it.toDto() })
+        if (decimalAsString) {
+            call.respond(points.map { it.toV1Dto() })
+        } else {
+            call.respond(points.map { it.toDto() })
+        }
     }
 }
