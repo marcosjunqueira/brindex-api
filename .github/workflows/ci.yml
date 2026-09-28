@@ -34,22 +34,16 @@ jobs:
 
   dependencies:
     name: Dependency scan
+    # The Gradle dependency graph is submitted by GitHub's automatic dependency submission
+    # (the `submit-gradle` check), which also works on Dependabot and fork PRs where this
+    # workflow's token is read-only. This job only reviews the PR's dependency changes.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      # Required to submit the resolved dependency graph to GitHub.
-      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "25"
-      # Submits resolved Gradle dependencies (incl. transitive) so Dependabot alerts cover them.
-      - uses: gradle/actions/dependency-submission@v4
-      # On PRs, fail when a dependency change introduces a known high/critical vulnerability.
-      - if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
+      # Fail when a dependency change introduces a known high/critical vulnerability.
+      - uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
           retry-on-snapshot-warnings: true
+          retry-on-snapshot-warnings-timeout: 300
