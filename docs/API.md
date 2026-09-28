@@ -19,8 +19,9 @@ cp .env.example .env   # set BRINDEX_DB_PATH to a database brindex-ingest has al
 
 The server listens on `:8080` by default (`PORT` env var to override) and fails fast at startup if
 `BRINDEX_DB_PATH` doesn't point at an existing database with the `series`/`points` tables already
-created. The database is opened read-only, and a read that hits `brindex-ingest`'s write lock waits
-up to 5 seconds before failing.
+created. Connections never create the file and reject writes (`PRAGMA query_only`), but can still
+roll back a hot journal left by an interrupted `brindex-ingest` run. A read that hits the ingest's
+write lock waits up to 5 seconds before failing.
 
 On `SIGTERM` the server stops accepting connections and gives in-flight requests up to 5 seconds to
 finish.

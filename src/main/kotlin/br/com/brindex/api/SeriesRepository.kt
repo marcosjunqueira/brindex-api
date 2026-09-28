@@ -3,6 +3,7 @@ package br.com.brindex.api
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.sqlite.SQLiteConfig
+import org.sqlite.SQLiteOpenMode
 import java.io.File
 import java.sql.Connection
 import java.sql.DriverManager
@@ -34,16 +35,23 @@ data class PointRow(
  */
 class SeriesRepository(private val dbPath: String) {
 
-    // Read-only: this API never writes, and a read-only open also means a wrong path fails
-    // instead of silently creating an empty database file. busy_timeout makes a read that hits
-    // brindex-ingest's write lock wait briefly instead of failing at once with SQLITE_BUSY.
+    // Opened read-write *without* SQLITE_OPEN_CREATE, then locked down with `query_only`:
+    // - not SQLITE_OPEN_READONLY: brindex-ingest uses a rollback journal, and if it dies
+    //   mid-transaction the next connection must roll the hot journal back before it can read,
+    //   which a read-only connection can't do (SQLITE_READONLY_ROLLBACK on every query);
+    // - no CREATE: a wrong or deleted path fails instead of silently creating an empty file;
+    // - `query_only`: any INSERT/UPDATE/DDL issued through this connection is rejected.
+    // busy_timeout makes a read that hits the ingest's write lock wait briefly instead of
+    // failing at once with SQLITE_BUSY.
     private val connectionProperties = SQLiteConfig().apply {
-        setReadOnly(true)
+        resetOpenMode(SQLiteOpenMode.CREATE)
         busyTimeout = BUSY_TIMEOUT_MS
     }.toProperties()
 
     private fun connect(): Connection =
-        DriverManager.getConnection("jdbc:sqlite:$dbPath", connectionProperties)
+        DriverManager.getConnection("jdbc:sqlite:$dbPath", connectionProperties).also { conn ->
+            conn.createStatement().use { it.execute("PRAGMA query_only = ON") }
+        }
 
     /** Fails fast with a clear message if `dbPath` doesn't point at a database with the expected
      * tables — called once at startup so a missing/wrong DB is a loud, immediate failure instead

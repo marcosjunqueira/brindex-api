@@ -69,6 +69,8 @@ class ResilienceTest {
         assertEquals(HttpStatusCode.ServiceUnavailable, ready.status)
         assertEquals("""{"error":"database unavailable"}""", ready.bodyAsText())
         assertEquals(HttpStatusCode.OK, client.get("/health").status)
+        // Opening without SQLITE_OPEN_CREATE must not recreate an empty file at the old path.
+        assertTrue(!dbFile.exists())
     }
 
     @Test
@@ -113,6 +115,54 @@ class ResilienceTest {
         application { module(dbPath = dbFile.absolutePath, pointsMaxRows = 2) }
         val response = client.get("/series/PTAX/USD/SELL/points")
         assertEquals(HttpStatusCode.OK, response.status)
+    }
+
+    /**
+     * brindex-ingest uses SQLite's default rollback journal. If it is killed mid-transaction it
+     * leaves a "hot" `-journal` file that the next connection must roll back before reading. A
+     * connection opened with SQLITE_OPEN_READONLY can't do that and fails every read, so this
+     * simulates the crash by snapshotting the database + journal while a write is in flight.
+     */
+    @Test
+    fun `reads recover from a hot journal left by an interrupted ingest write`() = testApplication {
+        val crashed = File(dbFile.parentFile, "brindex-crashed-${System.nanoTime()}.sqlite")
+        val crashedJournal = File(crashed.path + "-journal")
+        DriverManager.getConnection("jdbc:sqlite:${dbFile.absolutePath}").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.execute("PRAGMA cache_size = 1") // spill pages so the db file changes mid-transaction
+                conn.autoCommit = false
+                for (i in 0 until 3000) {
+                    stmt.executeUpdate(
+                        "INSERT INTO points (series_code, date, value, extra_values, source_updated_at) " +
+                            "VALUES ('PTAX:USD:SELL', 'x$i', '1', NULL, '2026-09-09T00:00:00Z')"
+                    )
+                }
+                dbFile.copyTo(crashed)
+                File(dbFile.path + "-journal").copyTo(crashedJournal)
+                conn.rollback()
+            }
+        }
+        try {
+            application { module(dbPath = crashed.absolutePath) }
+            assertEquals(HttpStatusCode.OK, client.get("/ready").status)
+            val points = client.get("/series/PTAX/USD/SELL/points")
+            assertEquals(HttpStatusCode.OK, points.status)
+            // Rolled back to the last committed state: the two seeded points only.
+            assertEquals(2, Regex("\"date\"").findAll(points.bodyAsText()).count())
+        } finally {
+            crashed.delete()
+            crashedJournal.delete()
+        }
+    }
+
+    @Test
+    fun `the API never writes to the database`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        client.get("/ready")
+        val before = dbFile.readBytes()
+        client.get("/series")
+        client.get("/series/PTAX/USD/SELL/points")
+        assertTrue(before.contentEquals(dbFile.readBytes()))
     }
 
     @Test
