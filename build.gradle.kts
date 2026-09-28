@@ -11,14 +11,9 @@ repositories {
     mavenCentral()
 }
 
-val ktorVersion = "2.3.13"
-
-// Ktor 2.3.x pulls Netty 4.1.111, which has known critical/high CVEs (GHSA-c4c3-7fpv-j4q5 and
-// others flagged by the CI dependency review). Align every Netty module on a patched 4.1.x.
-val nettyVersion = "4.1.138.Final"
+val ktorVersion = "3.6.0"
 
 dependencies {
-    implementation(platform("io.netty:netty-bom:$nettyVersion"))
     implementation("io.ktor:ktor-server-core:$ktorVersion")
     implementation("io.ktor:ktor-server-netty:$ktorVersion")
     implementation("io.ktor:ktor-server-content-negotiation:$ktorVersion")
