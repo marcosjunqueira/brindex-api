@@ -2,7 +2,7 @@
 
 A read-only HTTP API over the SQLite database that
 [`brindex-ingest`](https://github.com/marcosjunqueira/brindex-ingest) writes to: historical Tesouro
-Direto bond prices, PTAX (USD reference rate) and CDI. This API never writes to the database and
+Direto bond prices, PTAX (USD reference rate), CDI and B3 daily closes (stocks, FIIs, ETFs, BDRs). This API never writes to the database and
 never invents or reinterprets a series `code` — it only looks entries up by the exact string
 `brindex-ingest` assigned.
 
@@ -85,6 +85,7 @@ Every series has a stable `code` string, canonically `<DOMAIN>:<IDENTIFIER...>`,
 | `TD:LFT:2026-03-01:BUY`   | `treasury-direct` |
 | `PTAX:USD:SELL`           | `ptax`             |
 | `CDI:SGS:4391`            | `cdi`              |
+| `B3:PETR4`                | `b3`               |
 
 Wherever an endpoint below takes `{...code}`, the code's `:`-separated parts are given as separate
 URL path segments instead of one URL-encoded token — this keeps the URL readable instead of forcing
@@ -95,6 +96,7 @@ clients to percent-encode every `:` as `%3A`:
 | `TD:LFT:2026-03-01:BUY` | `TD/LFT/2026-03-01/BUY`    |
 | `PTAX:USD:SELL`         | `PTAX/USD/SELL`             |
 | `CDI:SGS:4391`          | `CDI/SGS/4391`              |
+| `B3:PETR4`              | `B3/PETR4`                  |
 
 The number of segments varies by domain, so there's no fixed-arity route — the API rejoins whatever
 segments it's given with `:` and looks that string up as-is; it never validates the identifier shape
@@ -127,9 +129,10 @@ List known series.
 
 | Name     | Required | Description                                  |
 | -------- | -------- | --------------------------------------------- |
-| `domain` | no       | Filter to one domain (`treasury-direct`, `ptax`, `cdi`). Omit to list every series. |
+| `domain` | no       | Filter to one domain (`treasury-direct`, `ptax`, `cdi`, `b3`). Omit to list every series. |
 
-**Response:** `200 OK`, a JSON array, one object per series, ordered by `code`:
+**Response:** `200 OK`, a JSON array, one object per series, ordered by `code`. With `b3` this is
+thousands of series; send `Accept-Encoding: gzip` (curl: `--compressed`) to get it compressed:
 
 ```json
 [

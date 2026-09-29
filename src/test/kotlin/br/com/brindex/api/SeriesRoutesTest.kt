@@ -1,7 +1,9 @@
 package br.com.brindex.api
 
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import java.io.File
@@ -49,7 +51,8 @@ class SeriesRoutesTest {
                     INSERT INTO series (code, domain, name, metadata, created_at) VALUES
                     ('TD:LFT:2026-03-01:BUY', 'treasury-direct', 'Tesouro Direto LFT 2026-03-01 (BUY)', '{"maturity":"2026-03-01","series":"LFT","side":"BUY"}', '2026-09-09T00:00:00Z'),
                     ('PTAX:USD:SELL', 'ptax', 'PTAX USD SELL', '{}', '2026-09-09T00:00:00Z'),
-                    ('CDI:SGS:4391', 'cdi', 'CDI', '{}', '2026-09-09T00:00:00Z')
+                    ('CDI:SGS:4391', 'cdi', 'CDI', '{}', '2026-09-09T00:00:00Z'),
+                    ('B3:PETR4', 'b3', 'PETR4 PETROBRAS PN N2', '{"ticker":"PETR4","bdi_code":"02","isin":"BRPETRACNPR6","currency":"BRL"}', '2026-09-29T00:00:00Z')
                     """.trimIndent()
                 )
                 stmt.executeUpdate(
@@ -58,7 +61,8 @@ class SeriesRoutesTest {
                     ('TD:LFT:2026-03-01:BUY', '2026-01-02', '18105.30', '{"rate":"0.000164","base_price":"18094.98"}', '2026-09-09T00:00:00Z'),
                     ('TD:LFT:2026-03-01:BUY', '2026-01-05', '18115.38', '{"rate":"0.000134","base_price":"18105.04"}', '2026-09-09T00:00:00Z'),
                     ('TD:LFT:2026-03-01:BUY', '2026-01-06', '1234.5678901234', NULL, '2026-09-09T00:00:00Z'),
-                    ('PTAX:USD:SELL', '2026-01-02', NULL, NULL, '2026-09-09T00:00:00Z')
+                    ('PTAX:USD:SELL', '2026-01-02', NULL, NULL, '2026-09-09T00:00:00Z'),
+                    ('B3:PETR4', '2026-09-29', '38.95', '{"open":"38.34","high":"39.00","low":"38.30","volume":"928800000.00","trades":"40001"}', '2026-09-29T00:00:00Z')
                     """.trimIndent()
                 )
             }
@@ -68,6 +72,22 @@ class SeriesRoutesTest {
     @AfterTest
     fun tearDown() {
         dbFile.delete()
+    }
+
+    @Test
+    fun `b3 ticker is served through the existing series routes`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/v1/series/B3/PETR4/points/latest")
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertTrue(response.bodyAsText().contains("\"value\":\"38.95\""))
+    }
+
+    @Test
+    fun `series listing is gzipped when the client accepts it`() = testApplication {
+        application { module(dbPath = dbFile.absolutePath) }
+        val response = client.get("/series") { header(HttpHeaders.AcceptEncoding, "gzip") }
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals("gzip", response.headers[HttpHeaders.ContentEncoding])
     }
 
     @Test

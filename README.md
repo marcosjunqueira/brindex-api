@@ -1,7 +1,7 @@
 # brindex-api
 
 Read-only HTTP API over BRIndex's historical series of official Brazilian market data
-(Tesouro Direto, PTAX, CDI). Serves the database populated by
+(Tesouro Direto, PTAX, CDI, B3 daily closes). Serves the database populated by
 [`brindex-ingest`](https://github.com/marcosjunqueira/brindex-ingest).
 
 ## Status
