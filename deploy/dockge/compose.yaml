@@ -1,0 +1,127 @@
+# Dockge stack for a host that already runs a shared Traefik (another stack) on the external Docker
+# network `proxy`, with the ACME resolver `myresolver` and entrypoint `websecure`. Paste this as the
+# stack's compose and .env.example as its .env. Walkthrough and the Traefik changes this stack
+# relies on: README.md next to this file.
+#
+# Differences from ../docker-compose.yml: no Traefik service (it lives in its own stack), the
+# rate-limit middlewares are labels on each app container, brindex-admin's secrets come from
+# the same .env (Dockge edits one .env per stack), and the API runs twice from the same image:
+# - brindex-api-public: API key required, routed by Traefik on API_HOST;
+# - brindex-api: no API key, reachable only on the Docker network `brindex-internal` as
+#   http://brindex-api:8080 for trusted containers (e.g. Cornerstone). NEVER give it Traefik
+#   labels, published ports or the `proxy` network: anything that reaches it reads without a key.
+
+x-brindex-user: &brindex-user
+  # Same uid:gid for every service that touches the data dir, matching the host user that owns it.
+  # SQLite needs write access to the files and the directory: brindex-api rolls back a journal left
+  # by an interrupted ingest run.
+  user: "${BRINDEX_UID:-10001}:${BRINDEX_GID:-10001}"
+
+networks:
+  proxy:
+    external: true
+  # Fixed name so other stacks can join it as an external network (see README.md).
+  internal:
+    name: brindex-internal
+
+services:
+  # Internal, keyless instance. Its service name is the hostname other stacks use.
+  brindex-api:
+    <<: *brindex-user
+    image: ghcr.io/marcosjunqueira/brindex-api:${BRINDEX_API_VERSION:?set BRINDEX_API_VERSION in .env}
+    networks: [internal]
+    environment:
+      - BRINDEX_DB_PATH=/data/brindex.sqlite
+      - REQUIRE_API_KEY=false
+    volumes:
+      # Read-write on purpose (see x-brindex-user). The API itself never writes (query_only).
+      - ${BRINDEX_DATA_DIR:-./data}:/data
+    restart: unless-stopped
+
+  # Public instance behind Traefik.
+  brindex-api-public:
+    <<: *brindex-user
+    image: ghcr.io/marcosjunqueira/brindex-api:${BRINDEX_API_VERSION:?set BRINDEX_API_VERSION in .env}
+    networks: [proxy]
+    environment:
+      - BRINDEX_DB_PATH=/data/brindex.sqlite
+      - ACCOUNTS_DB_PATH=/data/accounts.sqlite
+      - REQUIRE_API_KEY=true
+      - RATE_LIMIT_PER_MINUTE=60
+    volumes:
+      # Read-write on purpose (see x-brindex-user). The API itself never writes (query_only).
+      - ${BRINDEX_DATA_DIR:-./data}:/data
+    depends_on:
+      brindex-admin:
+        condition: service_healthy   # it creates accounts.sqlite, which the API requires
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      # Per client IP. CF-Connecting-IP can only be trusted because the `cloudflare` TLS option
+      # makes Traefik accept connections from Cloudflare alone (see README.md, Traefik changes).
+      - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.average=5
+      - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.period=1s
+      - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.burst=30
+      - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.sourcecriterion.requestheadername=CF-Connecting-IP
+      - traefik.http.middlewares.brindex-api-public-inflight.inflightreq.amount=10
+      - traefik.http.middlewares.brindex-api-public-inflight.inflightreq.sourcecriterion.requestheadername=CF-Connecting-IP
+      - traefik.http.routers.brindex-api-public.rule=Host(`${API_HOST:?set API_HOST in .env}`)
+      - traefik.http.routers.brindex-api-public.entrypoints=websecure
+      - traefik.http.routers.brindex-api-public.tls.certresolver=myresolver
+      - traefik.http.routers.brindex-api-public.tls.options=cloudflare@file
+      - traefik.http.routers.brindex-api-public.middlewares=brindex-api-public-ratelimit,brindex-api-public-inflight
+      - traefik.http.services.brindex-api-public.loadbalancer.server.port=8080
+    restart: unless-stopped
+
+  brindex-admin:
+    <<: *brindex-user
+    image: ghcr.io/marcosjunqueira/brindex-admin:${BRINDEX_ADMIN_VERSION:?set BRINDEX_ADMIN_VERSION in .env}
+    networks: [proxy]
+    environment:
+      - ACCOUNTS_DB_PATH=/data/accounts.sqlite
+      - PUBLIC_BASE_URL=https://${BILLING_HOST:?set BILLING_HOST in .env}
+      # Bind inside the container; the host-side port mapping below keeps it on localhost.
+      - ADMIN_HOST=0.0.0.0
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env (at least 16 characters)}
+      # Blank means unset: no STRIPE_SECRET_KEY leaves /subscribe and the webhook off.
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - STRIPE_PRICE_ID=${STRIPE_PRICE_ID:-}
+      - STRIPE_PORTAL_LOGIN_URL=${STRIPE_PORTAL_LOGIN_URL:-}
+      - STRIPE_LIVE_MODE=${STRIPE_LIVE_MODE:-false}
+    volumes:
+      - ${BRINDEX_DATA_DIR:-./data}:/data
+    ports:
+      - "127.0.0.1:8082:8082"   # admin page: host loopback only, never routed by Traefik
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.middlewares.brindex-billing-ratelimit.ratelimit.average=5
+      - traefik.http.middlewares.brindex-billing-ratelimit.ratelimit.period=1s
+      - traefik.http.middlewares.brindex-billing-ratelimit.ratelimit.burst=30
+      - traefik.http.middlewares.brindex-billing-ratelimit.ratelimit.sourcecriterion.requestheadername=CF-Connecting-IP
+      - traefik.http.middlewares.brindex-billing-inflight.inflightreq.amount=10
+      - traefik.http.middlewares.brindex-billing-inflight.inflightreq.sourcecriterion.requestheadername=CF-Connecting-IP
+      - traefik.http.routers.brindex-billing.rule=Host(`${BILLING_HOST}`)
+      - traefik.http.routers.brindex-billing.entrypoints=websecure
+      - traefik.http.routers.brindex-billing.tls.certresolver=myresolver
+      - traefik.http.routers.brindex-billing.tls.options=cloudflare@file
+      - traefik.http.routers.brindex-billing.middlewares=brindex-billing-ratelimit,brindex-billing-inflight
+      # Only the public listener goes through Traefik.
+      - traefik.http.services.brindex-billing.loadbalancer.server.port=8081
+    restart: unless-stopped
+
+  # One-shot job, the only writer of brindex.sqlite. Never started by `up` or by Dockge's Start
+  # button (profile). Run it from the stack directory under flock (see README.md):
+  #   flock ingest.lock docker compose run --rm ingest     (default: --source all, last 30 days)
+  #   flock ingest.lock docker compose run --rm ingest --source ptax --since 2020-01-01
+  # It needs outbound internet only, so it stays on the stack's default network.
+  ingest:
+    <<: *brindex-user
+    image: ghcr.io/marcosjunqueira/brindex-ingest:${BRINDEX_INGEST_VERSION:?set BRINDEX_INGEST_VERSION in .env}
+    profiles: [jobs]
+    environment:
+      - BRINDEX_DB_PATH=/data/brindex.sqlite
+    volumes:
+      - ${BRINDEX_DATA_DIR:-./data}:/data
