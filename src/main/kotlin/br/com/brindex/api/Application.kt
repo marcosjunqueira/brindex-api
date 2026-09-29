@@ -17,6 +17,8 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.callid.CallId
 import io.ktor.server.plugins.callid.callIdMdc
+import io.ktor.server.plugins.compression.Compression
+import io.ktor.server.plugins.compression.gzip
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
@@ -115,6 +117,11 @@ fun Application.module(
             // allowed explicitly or the preflight fails).
             allowHeader(HttpHeaders.Authorization)
         }
+    }
+    install(Compression) {
+        // `GET /series` lists every B3 ticker (thousands of series); gzip keeps that one plain,
+        // unpaginated JSON array small on the wire for clients that send `Accept-Encoding: gzip`.
+        gzip()
     }
     install(ContentNegotiation) {
         json()
