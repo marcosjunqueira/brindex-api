@@ -166,7 +166,7 @@ backup (safe while the services run; never `cp` a live SQLite file):
 #!/usr/bin/env bash
 # /path/to/backup_brindex.sh
 set -euo pipefail
-DATA=/path/to/compose/data
+DATA=/srv/brindex/data
 OUT=/path/to/backups
 DAY=$(date +%F)
 sqlite3 "$DATA/accounts.sqlite" ".backup '$OUT/accounts-$DAY.sqlite'"

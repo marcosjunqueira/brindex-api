@@ -84,6 +84,7 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
+          flavor: latest=false   # "latest" is listed explicitly below
           # v1.2.3 -> 1.2.3, 1.2, 1 and latest. While the major version is 0 the bare major tag
           # ("0") is skipped: 0.x releases make no compatibility promise across minors.
           tags: |
