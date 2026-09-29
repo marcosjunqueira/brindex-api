@@ -61,7 +61,8 @@ echo "$GHCR_TOKEN" | docker login ghcr.io -u marcosjunqueira --password-stdin
 brindex-api/brindex-ingest package can be pulled without logging in.)
 
 The deploy files live in this repo under [`deploy/`](../deploy): `docker-compose.yml`,
-`traefik/dynamic.yml` and `.env.example`. Copy that directory to the server, e.g.:
+`traefik/dynamic.yml` and `.env.example`. If Traefik already runs in its own stack (e.g. Dockge with a shared `proxy`
+network), use [`deploy/dockge/`](../deploy/dockge/README.md) instead. Copy that directory to the server, e.g.:
 
 ```bash
 git clone --depth 1 https://github.com/marcosjunqueira/brindex-api.git /tmp/brindex-api
