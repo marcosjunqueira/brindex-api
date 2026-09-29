@@ -1,0 +1,110 @@
+# Production stack for one Docker host: Traefik in front of brindex-api and brindex-admin's public
+# listener, brindex-admin's admin page on the host's loopback only, and brindex-ingest as a one-shot
+# job run by host cron. Walkthrough: docs/DEPLOY.md. Variables: .env (see .env.example here).
+#
+# Pin BRINDEX_*_VERSION to a release (e.g. 1.2.3) in .env; rolling back is setting the previous
+# version and running `docker compose up -d`.
+
+x-brindex-user: &brindex-user
+  # Same uid:gid for every service that touches ./data, matching the host user that owns ./data
+  # (and runs the backups). SQLite needs write access to the files and the directory: brindex-api
+  # rolls back a journal left by an interrupted ingest run.
+  user: "${BRINDEX_UID:-10001}:${BRINDEX_GID:-10001}"
+
+services:
+  traefik:
+    image: traefik:v3
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      # Only the Cloudflare mTLS option lives in a file: TLS options can't be set with labels.
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.dnschallenge.provider=cloudflare
+      # Access logs would record ?api_key=... (Portfolio Performance sends the key in the URL).
+      # Either leave access logs off, or enable them and drop the path:
+      # - --accesslog=true
+      # - --accesslog.fields.names.RequestPath=drop
+    environment:
+      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
+    ports:
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik:/etc/traefik:ro
+      - ./letsencrypt:/letsencrypt
+    labels:
+      # Shared middlewares are declared on Traefik itself so they exist whenever Traefik runs,
+      # whichever app container is up. Routers reference them as <name>@docker.
+      - traefik.enable=true
+      # ~300 req/min per client IP, bursts up to 30. CF-Connecting-IP is set by Cloudflare on every
+      # request and can't be spoofed because only Cloudflare can connect (client cert in dynamic.yml).
+      - traefik.http.middlewares.per-ip-ratelimit.ratelimit.average=5
+      - traefik.http.middlewares.per-ip-ratelimit.ratelimit.period=1s
+      - traefik.http.middlewares.per-ip-ratelimit.ratelimit.burst=30
+      - traefik.http.middlewares.per-ip-ratelimit.ratelimit.sourcecriterion.requestheadername=CF-Connecting-IP
+      - traefik.http.middlewares.per-ip-inflight.inflightreq.amount=10
+      - traefik.http.middlewares.per-ip-inflight.inflightreq.sourcecriterion.requestheadername=CF-Connecting-IP
+    restart: unless-stopped
+
+  brindex-api:
+    <<: *brindex-user
+    image: ghcr.io/marcosjunqueira/brindex-api:${BRINDEX_API_VERSION:?set BRINDEX_API_VERSION in .env}
+    environment:
+      - BRINDEX_DB_PATH=/data/brindex.sqlite
+      - ACCOUNTS_DB_PATH=/data/accounts.sqlite
+      - REQUIRE_API_KEY=true
+      - RATE_LIMIT_PER_MINUTE=60
+    volumes:
+      # Read-write on purpose (see x-brindex-user). The API itself never writes (query_only).
+      - ./data:/data
+    depends_on:
+      brindex-admin:
+        condition: service_healthy   # it creates accounts.sqlite, which the API requires
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.api.rule=Host(`${API_HOST}`)
+      - traefik.http.routers.api.entrypoints=websecure
+      - traefik.http.routers.api.tls.certresolver=le
+      - traefik.http.routers.api.tls.options=cloudflare@file
+      - traefik.http.routers.api.middlewares=per-ip-ratelimit@docker,per-ip-inflight@docker
+      - traefik.http.services.api.loadbalancer.server.port=8080
+    restart: unless-stopped
+
+  brindex-admin:
+    <<: *brindex-user
+    image: ghcr.io/marcosjunqueira/brindex-admin:${BRINDEX_ADMIN_VERSION:?set BRINDEX_ADMIN_VERSION in .env}
+    env_file: brindex-admin.env   # ADMIN_USER, ADMIN_PASSWORD, STRIPE_* (see brindex-admin's .env.example)
+    environment:
+      - ACCOUNTS_DB_PATH=/data/accounts.sqlite
+      - PUBLIC_BASE_URL=https://${BILLING_HOST}
+      # Bind inside the container; the host-side port mapping below keeps it on localhost.
+      - ADMIN_HOST=0.0.0.0
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8082:8082"   # admin page: host loopback only, never routed by Traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.billing.rule=Host(`${BILLING_HOST}`)
+      - traefik.http.routers.billing.entrypoints=websecure
+      - traefik.http.routers.billing.tls.certresolver=le
+      - traefik.http.routers.billing.tls.options=cloudflare@file
+      - traefik.http.routers.billing.middlewares=per-ip-ratelimit@docker,per-ip-inflight@docker
+      # Only the public listener goes through Traefik.
+      - traefik.http.services.billing.loadbalancer.server.port=8081
+    restart: unless-stopped
+
+  # One-shot job, the only writer of brindex.sqlite. Never started by `up` (profile); host cron runs
+  #   docker compose run --rm ingest            (default: --source all, last 30 days / current year)
+  #   docker compose run --rm ingest --source ptax --since 2020-01-01
+  ingest:
+    <<: *brindex-user
+    image: ghcr.io/marcosjunqueira/brindex-ingest:${BRINDEX_INGEST_VERSION:?set BRINDEX_INGEST_VERSION in .env}
+    profiles: [jobs]
+    environment:
+      - BRINDEX_DB_PATH=/data/brindex.sqlite
+    volumes:
+      - ./data:/data

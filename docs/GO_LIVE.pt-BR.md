@@ -20,15 +20,16 @@ Tesouro Direto (ODbL), PTAX e CDI são dados abertos.
 
 ## 1. Pré-requisitos do servidor
 
-- [ ] Host Linux com Docker + Docker Compose, JDK 25 (para o build), Python 3.11+ com `venv` e o
-      CLI `sqlite3` (para backups).
+- [ ] Host Linux com Docker + Docker Compose e o CLI `sqlite3` (para backups). Nada é compilado no
+      servidor: todos os serviços rodam a partir das imagens no GHCR.
 - [ ] Domínio no Cloudflare, configurado conforme [`DEPLOY.md` §1](DEPLOY.md#1-cloudflare-dns-and-tls)
       (Full strict, Authenticated Origin Pulls, token de DNS).
-- [ ] Apps compiladas conforme [`DEPLOY.md` §2](DEPLOY.md#2-build-the-apps), Traefik conforme
+- [ ] Imagens e arquivos de deploy conforme [`DEPLOY.md` §2](DEPLOY.md#2-get-the-images), Traefik conforme
       [§3](DEPLOY.md#3-traefik-trust-only-cloudflare), compose conforme
       [§4](DEPLOY.md#4-docker-composeyml). Ainda não rode `docker compose up`.
 - [ ] Só a porta 443 (e SSH) acessível de fora. Nada escutando publicamente em 8080/8081/8082.
-- [ ] Anote o commit de cada repo que subir (`git rev-parse HEAD`): é o que você usa no rollback.
+- [ ] Fixe no `.env` a versão publicada de cada imagem (`BRINDEX_*_VERSION`) e anote as anteriores:
+      é o que você usa no rollback. Releases: [`DEPLOY.md` §8](DEPLOY.md#8-releasing).
 
 ## 2. Variáveis de ambiente
 
@@ -38,11 +39,12 @@ Cada serviço documenta suas variáveis no próprio `.env.example`; isto é o qu
 |---|---|---|
 | brindex-api | `environment:` no compose | `BRINDEX_DB_PATH=/data/brindex.sqlite`, `ACCOUNTS_DB_PATH=/data/accounts.sqlite`, `REQUIRE_API_KEY=true`, `RATE_LIMIT_PER_MINUTE` (padrão 60). Opcionais: `POINTS_MAX_ROWS`, `CORS_ALLOWED_ORIGINS`. Veja [`.env.example`](../.env.example). |
 | brindex-admin | `brindex-admin.env` (modo `600`, nunca commitado) | `ADMIN_USER`, `ADMIN_PASSWORD` (≥ 16 caracteres), `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`, `STRIPE_PORTAL_LOGIN_URL`, `STRIPE_LIVE_MODE` (passo 5). `ACCOUNTS_DB_PATH`, `PUBLIC_BASE_URL`, `ADMIN_HOST` ficam no compose. Veja o `.env.example` do brindex-admin. |
-| brindex-ingest | `.env` ao lado do `run_ingest.sh` | `BRINDEX_DB_PATH` = caminho no host do `./data/brindex.sqlite` do compose, `BRINDEX_SOURCE=all` (veja o passo 3 para deixar `b3` de fora até resolver o passo 0). |
-| Traefik | `.env` ao lado do compose | `CF_DNS_API_TOKEN` |
+| brindex-ingest | `environment:` no compose | `BRINDEX_DB_PATH=/data/brindex.sqlite`. A fonte é um argumento de linha de comando (passo 3). |
+| Compose | `.env` ao lado do compose ([`deploy/.env.example`](../deploy/.env.example)) | `BRINDEX_API_VERSION`, `BRINDEX_ADMIN_VERSION`, `BRINDEX_INGEST_VERSION`, `BRINDEX_UID`, `BRINDEX_GID`, `API_HOST`, `BILLING_HOST`, `ACME_EMAIL`, `CF_DNS_API_TOKEN` |
 
 - [ ] `brindex-api` e `brindex-admin` apontam para o **mesmo** `accounts.sqlite`.
-- [ ] `brindex-api` e `brindex-ingest` apontam para o **mesmo** `brindex.sqlite`.
+- [ ] `brindex-api` e `ingest` apontam para o **mesmo** `brindex.sqlite`.
+- [ ] `./data` pertence a `BRINDEX_UID:BRINDEX_GID` (o usuário de deploy).
 - [ ] Arquivos de ambiente com `chmod 600` e dono = usuário de deploy.
 
 ## 3. Ingestão: carga inicial e agendamento diário
@@ -50,19 +52,22 @@ Cada serviço documenta suas variáveis no próprio `.env.example`; isto é o qu
 A brindex-api não sobe enquanto o `brindex.sqlite` não tiver as tabelas, então carregue os dados
 primeiro.
 
+Rode a partir do diretório do compose (`/srv/brindex` no `DEPLOY.md`). O job `ingest` grava
+`./data/brindex.sqlite` como `BRINDEX_UID` e termina; os argumentos depois de `ingest` vão para o
+`brindex-ingest`.
+
 ```bash
-git clone https://github.com/marcosjunqueira/brindex-ingest.git && cd brindex-ingest
-cp .env.example .env    # ajuste BRINDEX_DB_PATH e BRINDEX_SOURCE
+cd /srv/brindex
 # Carga inicial: histórico. A B3 baixa um arquivo de ~80 MB por ano.
-./run_ingest.sh --since 2020-01-01 --since-year 2020
+docker compose run --rm ingest --since 2020-01-01 --since-year 2020
 echo "exit code: $?"    # 0 só se todas as fontes funcionaram
 ```
 
-`--source` aceita um valor só (`all` ou uma fonte). Para deixar `b3` de fora até resolver o passo 0,
-rode as outras três (um `--source` no fim sobrepõe o do `.env`):
+`--source` aceita um valor só (`all`, o padrão, ou uma fonte). Para deixar `b3` de fora até resolver
+o passo 0, rode as outras três:
 
 ```bash
-for s in treasury-direct ptax cdi; do ./run_ingest.sh --since 2020-01-01 --since-year 2020 --source $s; done
+for s in treasury-direct ptax cdi; do docker compose run --rm ingest --since 2020-01-01 --since-year 2020 --source $s; done
 ```
 
 Cada fonte falha de forma independente; um exit diferente de zero lista no log as fontes que
@@ -72,13 +77,13 @@ Agendamento diário (cron do usuário de deploy, 22:00 no horário do servidor, 
 o fechamento do dia):
 
 ```cron
-0 22 * * * /path/to/brindex-ingest/run_ingest.sh >> /var/log/brindex-ingest.log 2>&1
+0 22 * * * cd /srv/brindex && docker compose run --rm ingest >> /var/log/brindex-ingest.log 2>&1
 ```
 
-(Sem `b3`: uma linha por fonte, cada uma terminando em `run_ingest.sh --source <fonte>`.)
+(Sem `b3`: uma linha por fonte, cada uma terminando em `run --rm ingest --source <fonte>`.)
 
 - [ ] Carga inicial terminou com exit code 0.
-- [ ] Entrada do cron instalada; o arquivo de log é gravável pelo usuário de deploy.
+- [ ] Entrada do cron instalada; o usuário de deploy está no grupo `docker` e consegue gravar o log.
 - [ ] Opcional: acrescente `&& curl -fsS https://hc-ping.com/<uuid>` (ou outro serviço de
       dead-man's switch) para ser avisado quando uma execução falhar ou não acontecer.
 
@@ -190,6 +195,7 @@ find "$OUT" -name '*.sqlite' -mtime +14 -delete    # guarda duas semanas localme
 - [ ] Alerta da ingestão do passo 3 (dead-man's switch ou leitura do log do cron).
 - [ ] Stripe → Developers → Webhooks: ative os alertas por e-mail de entregas com falha.
 - [ ] Alerta de espaço em disco no volume de dados (backfill do COTAHIST e backups crescem).
+- [ ] Healthchecks: `docker compose ps` mostra brindex-api e brindex-admin como `healthy`.
 - [ ] Logs: `docker compose logs -f brindex-api brindex-admin`. Mantenha os access logs do Traefik
       desligados ou com `RequestPath` descartado ([`DEPLOY.md` §4](DEPLOY.md#4-docker-composeyml)):
       o path pode trazer `?api_key=`.
@@ -198,8 +204,8 @@ find "$OUT" -name '*.sqlite' -mtime +14 -delete    # guarda duas semanas localme
 
 | Problema | Ação |
 |---|---|
-| Release ruim da brindex-api ou do brindex-admin | `git checkout <commit anterior>` no repo, `./gradlew installDist`, `docker compose up -d --force-recreate <serviço>`. |
-| Ingestão ruim (valores errados) | Corrija ou reverta o brindex-ingest e rode `run_ingest.sh` de novo no período afetado: os upserts sobrescrevem. Se não bastar, pare a brindex-api, restaure `brindex-<dia>.sqlite` sobre `data/brindex.sqlite` e suba de novo. |
+| Release ruim da brindex-api ou do brindex-admin | Volte a versão anterior no `.env` (`BRINDEX_API_VERSION` / `BRINDEX_ADMIN_VERSION`) e rode `docker compose up -d <serviço>`. |
+| Ingestão ruim (valores errados) | Volte o `BRINDEX_INGEST_VERSION` anterior (ou publique uma correção) e rode `docker compose run --rm ingest` de novo no período afetado: os upserts sobrescrevem. Se não bastar, pare a brindex-api, restaure `brindex-<dia>.sqlite` sobre `data/brindex.sqlite` e suba de novo. |
 | `accounts.sqlite` danificado | Pare brindex-admin e brindex-api, restaure o `accounts-<dia>.sqlite` mais recente e suba os dois. Assinaturas alteradas depois do backup são corrigidas no próximo webhook do Stripe daquele cliente; confira no Dashboard o que for mais novo que o backup. |
 | Parar de vender (ex.: a B3 negar) | Tire `STRIPE_SECRET_KEY` do `brindex-admin.env` e recrie o brindex-admin: `/subscribe` e o webhook desligam, as chaves existentes continuam funcionando. Pause ou cancele as assinaturas no Dashboard. Para tirar os dados B3 da API, pare de ingerir `b3` (passo 3) e reconstrua o `brindex.sqlite` sem eles. |
 | Chave do Stripe vazada | Role a chave no Dashboard, atualize o `brindex-admin.env`, recrie o brindex-admin. |
