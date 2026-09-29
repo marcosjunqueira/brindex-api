@@ -12,7 +12,7 @@ What this stack expects from the Traefik stack:
 | Docker network | `proxy` (external), `--providers.docker.exposedbydefault=false` |
 | Entrypoint | `websecure` (:443) |
 | ACME resolver | `myresolver` (Cloudflare DNS challenge) |
-| File provider | defines the TLS option `cloudflare` (below) |
+| Ingress | a Cloudflare Tunnel (`cloudflared`) pointed at Traefik :443 (below) |
 
 ## Two API instances
 
@@ -20,7 +20,7 @@ The stack runs the brindex-api image twice, on the same data dir:
 
 | Service | API key | Reachable from |
 |---|---|---|
-| `brindex-api-public` | required, plus the app's per-key limit and Traefik's per-IP limits | the internet, through Cloudflare and Traefik on `API_HOST` |
+| `brindex-api-public` | required, plus the app's per-key limit and Traefik's per-IP limits | the internet, through the Cloudflare Tunnel and Traefik on `API_HOST` |
 | `brindex-api` | none | containers on the Docker network `brindex-internal` only, as `http://brindex-api:8080` |
 
 The keyless instance must never get Traefik labels, published ports, or the `proxy` network: anything
@@ -44,36 +44,20 @@ and point it at `http://brindex-api:8080`.
 
 ## 1. Traefik changes
 
-### Accept only Cloudflare (required)
+### Cloudflare Tunnel (required)
 
-The per-IP limits key on `CF-Connecting-IP`. Anyone who reaches the origin directly can set that
-header to any value and dodge the limits, so Traefik must accept connections from Cloudflare only.
-Turn on **Authenticated Origin Pulls** in Cloudflare (SSL/TLS → Origin Server), then add the
-`cloudflare` TLS option to the file the Traefik file provider already loads (merge into its existing
-`tls:` key) and put Cloudflare's CA next to it:
+The per-IP limits key on `CF-Connecting-IP`. Anyone who reaches Traefik directly can set that header
+to any value and dodge the limits, so Traefik must be reachable only through the Cloudflare Tunnel:
+do not forward port 443 from the router to this host.
 
-```yaml
-tls:
-  options:
-    cloudflare:
-      minVersion: VersionTLS12
-      clientAuth:
-        caFiles:
-          - /certs/cloudflare-origin-pull-ca.pem
-        clientAuthType: RequireAndVerifyClientCert
-```
+In the tunnel, for each public hostname (`API_HOST` and `BILLING_HOST`), set the service to Traefik's
+HTTPS address and, under Additional application settings → TLS, set **Origin Server Name** to that same
+hostname. Without it `cloudflared` connects without SNI, gets Traefik's default certificate, rejects it,
+and Cloudflare answers `502` (Traefik's debug log shows `tls: bad certificate` from the `cloudflared`
+host).
 
-```bash
-curl -fsSL -o <certs dir>/cloudflare-origin-pull-ca.pem \
-  https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem
-```
-
-The option applies only to the routers that reference it (`tls.options=cloudflare@file`), so other
-sites on the same Traefik are unaffected. Both hostnames must be proxied (orange cloud) in Cloudflare.
-
-Trusting Cloudflare's ranges with `--entrypoints.websecure.forwardedHeaders.trustedIPs` is not a
-substitute: it controls which `X-Forwarded-*` headers Traefik keeps, but does not stop a direct
-connection from sending its own `CF-Connecting-IP`.
+Do not use Authenticated Origin Pulls (a Traefik `clientAuth` TLS option) here: `cloudflared` does not
+present that client certificate, so Traefik would reject every tunnel connection.
 
 ### Recommended
 

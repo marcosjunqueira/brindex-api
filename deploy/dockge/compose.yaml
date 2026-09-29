@@ -57,8 +57,8 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=proxy
-      # Per client IP. CF-Connecting-IP can only be trusted because the `cloudflare` TLS option
-      # makes Traefik accept connections from Cloudflare alone (see README.md, Traefik changes).
+      # Per client IP. CF-Connecting-IP can only be trusted because Traefik is reachable only
+      # through the Cloudflare Tunnel, never from the internet (see README.md, Cloudflare Tunnel).
       - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.average=5
       - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.period=1s
       - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.burst=30
@@ -68,7 +68,6 @@ services:
       - traefik.http.routers.brindex-api-public.rule=Host(`${API_HOST:?set API_HOST in .env}`)
       - traefik.http.routers.brindex-api-public.entrypoints=websecure
       - traefik.http.routers.brindex-api-public.tls.certresolver=myresolver
-      - traefik.http.routers.brindex-api-public.tls.options=cloudflare@file
       - traefik.http.routers.brindex-api-public.middlewares=brindex-api-public-ratelimit,brindex-api-public-inflight
       - traefik.http.services.brindex-api-public.loadbalancer.server.port=8080
     restart: unless-stopped
@@ -106,7 +105,6 @@ services:
       - traefik.http.routers.brindex-billing.rule=Host(`${BILLING_HOST}`)
       - traefik.http.routers.brindex-billing.entrypoints=websecure
       - traefik.http.routers.brindex-billing.tls.certresolver=myresolver
-      - traefik.http.routers.brindex-billing.tls.options=cloudflare@file
       - traefik.http.routers.brindex-billing.middlewares=brindex-billing-ratelimit,brindex-billing-inflight
       # Only the public listener goes through Traefik.
       - traefik.http.services.brindex-billing.loadbalancer.server.port=8081
