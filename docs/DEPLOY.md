@@ -171,11 +171,19 @@ curl -s -o /dev/null -w '%{http_code}\n' https://billing.example.com/admin   # 4
 brindex-api, brindex-admin and brindex-ingest release the same way, with [SEMVER](https://semver.org)
 tags on `main`:
 
-1. Bump the version (`version` in `build.gradle.kts`, or `pyproject.toml` for brindex-ingest) in a
-   PR and merge it, so the packaged app carries the same number as the image.
-2. Tag the merge commit and push the tag:
+1. Run `scripts/release.sh` from an up-to-date, clean `main` (each repo has its own copy):
    ```bash
    git switch main && git pull
+   scripts/release.sh --dry-run patch   # checks and prints the plan; changes nothing
+   scripts/release.sh patch             # or minor, major, or an explicit 1.2.3
+   ```
+   It refuses to run off `main`, with uncommitted changes, behind or ahead of `origin/main`, or
+   when the tag already exists. After you type the tag to confirm, it sets the version (`version`
+   in `build.gradle.kts`, or `pyproject.toml` for brindex-ingest), commits `Release 1.2.3` on
+   `main`, tags it `v1.2.3` and pushes both at once. If the version was already bumped in a merged
+   PR, pass that same version and it only tags.
+2. By hand, the same thing is: bump the version on `main`, then tag that commit and push the tag:
+   ```bash
    git tag v1.2.3 && git push origin v1.2.3
    ```
 3. The `Release` workflow (`.github/workflows/release.yml`) then:
