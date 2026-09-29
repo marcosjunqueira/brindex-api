@@ -14,6 +14,34 @@ What this stack expects from the Traefik stack:
 | ACME resolver | `myresolver` (Cloudflare DNS challenge) |
 | File provider | defines the TLS option `cloudflare` (below) |
 
+## Two API instances
+
+The stack runs the brindex-api image twice, on the same data dir:
+
+| Service | API key | Reachable from |
+|---|---|---|
+| `brindex-api-public` | required, plus the app's per-key limit and Traefik's per-IP limits | the internet, through Cloudflare and Traefik on `API_HOST` |
+| `brindex-api` | none | containers on the Docker network `brindex-internal` only, as `http://brindex-api:8080` |
+
+The keyless instance must never get Traefik labels, published ports, or the `proxy` network: anything
+that can reach it reads the data without a key. Only trusted containers join `brindex-internal`.
+
+To let another stack (e.g. Cornerstone) call it, deploy this stack first (it creates the network), then
+add to that stack's compose:
+
+```yaml
+networks:
+  brindex-internal:
+    external: true
+
+services:
+  cornerstone:
+    networks:
+      - brindex-internal   # keep its other networks too, e.g. proxy
+```
+
+and point it at `http://brindex-api:8080`.
+
 ## 1. Traefik changes
 
 ### Accept only Cloudflare (required)
@@ -81,8 +109,8 @@ host (`docker login ghcr.io ...` as root) and mount `/root/.docker:/root/.docker
    ```bash
    mkdir -p data && chown 1000:1000 data
    ```
-3. Deploy. brindex-admin starts first and creates `accounts.sqlite`; brindex-api starts once
-   brindex-admin is healthy.
+3. Deploy. brindex-admin starts first and creates `accounts.sqlite`; brindex-api-public starts
+   once brindex-admin is healthy. The internal `brindex-api` needs no accounts database.
 
 The admin page is at `http://127.0.0.1:8082/admin` on the server only; reach it with an SSH tunnel
 (`ssh -L 8082:127.0.0.1:8082 <server>`). It has no Traefik router.

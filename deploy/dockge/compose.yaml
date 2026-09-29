@@ -4,8 +4,12 @@
 # relies on: README.md next to this file.
 #
 # Differences from ../docker-compose.yml: no Traefik service (it lives in its own stack), the
-# rate-limit middlewares are labels on each app container, and brindex-admin's secrets come from
-# the same .env (Dockge edits one .env per stack).
+# rate-limit middlewares are labels on each app container, brindex-admin's secrets come from
+# the same .env (Dockge edits one .env per stack), and the API runs twice from the same image:
+# - brindex-api-public: API key required, routed by Traefik on API_HOST;
+# - brindex-api: no API key, reachable only on the Docker network `brindex-internal` as
+#   http://brindex-api:8080 for trusted containers (e.g. Cornerstone). NEVER give it Traefik
+#   labels, published ports or the `proxy` network: anything that reaches it reads without a key.
 
 x-brindex-user: &brindex-user
   # Same uid:gid for every service that touches the data dir, matching the host user that owns it.
@@ -16,9 +20,26 @@ x-brindex-user: &brindex-user
 networks:
   proxy:
     external: true
+  # Fixed name so other stacks can join it as an external network (see README.md).
+  internal:
+    name: brindex-internal
 
 services:
+  # Internal, keyless instance. Its service name is the hostname other stacks use.
   brindex-api:
+    <<: *brindex-user
+    image: ghcr.io/marcosjunqueira/brindex-api:${BRINDEX_API_VERSION:?set BRINDEX_API_VERSION in .env}
+    networks: [internal]
+    environment:
+      - BRINDEX_DB_PATH=/data/brindex.sqlite
+      - REQUIRE_API_KEY=false
+    volumes:
+      # Read-write on purpose (see x-brindex-user). The API itself never writes (query_only).
+      - ${BRINDEX_DATA_DIR:-./data}:/data
+    restart: unless-stopped
+
+  # Public instance behind Traefik.
+  brindex-api-public:
     <<: *brindex-user
     image: ghcr.io/marcosjunqueira/brindex-api:${BRINDEX_API_VERSION:?set BRINDEX_API_VERSION in .env}
     networks: [proxy]
@@ -38,18 +59,18 @@ services:
       - traefik.docker.network=proxy
       # Per client IP. CF-Connecting-IP can only be trusted because the `cloudflare` TLS option
       # makes Traefik accept connections from Cloudflare alone (see README.md, Traefik changes).
-      - traefik.http.middlewares.brindex-api-ratelimit.ratelimit.average=5
-      - traefik.http.middlewares.brindex-api-ratelimit.ratelimit.period=1s
-      - traefik.http.middlewares.brindex-api-ratelimit.ratelimit.burst=30
-      - traefik.http.middlewares.brindex-api-ratelimit.ratelimit.sourcecriterion.requestheadername=CF-Connecting-IP
-      - traefik.http.middlewares.brindex-api-inflight.inflightreq.amount=10
-      - traefik.http.middlewares.brindex-api-inflight.inflightreq.sourcecriterion.requestheadername=CF-Connecting-IP
-      - traefik.http.routers.brindex-api.rule=Host(`${API_HOST:?set API_HOST in .env}`)
-      - traefik.http.routers.brindex-api.entrypoints=websecure
-      - traefik.http.routers.brindex-api.tls.certresolver=myresolver
-      - traefik.http.routers.brindex-api.tls.options=cloudflare@file
-      - traefik.http.routers.brindex-api.middlewares=brindex-api-ratelimit,brindex-api-inflight
-      - traefik.http.services.brindex-api.loadbalancer.server.port=8080
+      - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.average=5
+      - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.period=1s
+      - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.burst=30
+      - traefik.http.middlewares.brindex-api-public-ratelimit.ratelimit.sourcecriterion.requestheadername=CF-Connecting-IP
+      - traefik.http.middlewares.brindex-api-public-inflight.inflightreq.amount=10
+      - traefik.http.middlewares.brindex-api-public-inflight.inflightreq.sourcecriterion.requestheadername=CF-Connecting-IP
+      - traefik.http.routers.brindex-api-public.rule=Host(`${API_HOST:?set API_HOST in .env}`)
+      - traefik.http.routers.brindex-api-public.entrypoints=websecure
+      - traefik.http.routers.brindex-api-public.tls.certresolver=myresolver
+      - traefik.http.routers.brindex-api-public.tls.options=cloudflare@file
+      - traefik.http.routers.brindex-api-public.middlewares=brindex-api-public-ratelimit,brindex-api-public-inflight
+      - traefik.http.services.brindex-api-public.loadbalancer.server.port=8080
     restart: unless-stopped
 
   brindex-admin:
