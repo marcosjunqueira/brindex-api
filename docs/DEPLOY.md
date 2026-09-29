@@ -7,6 +7,7 @@ Step-by-step production setup for the whole stack on one Docker host. For the fu
 client ──HTTPS──> Cloudflare ──HTTPS + client cert──> Traefik :443 ──> brindex-api   :8080
                                                                   └──> brindex-admin :8081 (public billing)
 you ──SSH tunnel──> 127.0.0.1:8082 ──> brindex-admin admin page (never through Traefik)
+host cron ──> flock ingest.lock docker compose run --rm ingest ──> ./data/brindex.sqlite (only writer)
 ```
 
 Who limits what:
@@ -16,7 +17,7 @@ Who limits what:
 | Traefik | Per client IP (real IP from Cloudflare's `CF-Connecting-IP`): stops floods, including requests with random/invalid keys, before they reach the app |
 | brindex-api | Per API key (`RATE_LIMIT_PER_MINUTE`): the subscriber's quota |
 
-Replace `example.com` with your domain throughout. Assumed hostnames: `api.example.com` (brindex-api)
+Replace `example.com` with your domain throughout (in `.env`, `API_HOST`/`BILLING_HOST`). Assumed hostnames: `api.example.com` (brindex-api)
 and `billing.example.com` (brindex-admin's public side).
 
 ## 1. Cloudflare DNS and TLS
@@ -33,142 +34,104 @@ and `billing.example.com` (brindex-admin's public side).
 5. Caching: leave the default rules. Don't add a "Cache Everything" rule for `api.example.com`: every
    response depends on the API key.
 
-## 2. Build the apps
+## 2. Get the images
 
-No images are published; build the distributions on the server (JDK 25):
+Each repo publishes a Docker image to GHCR on every release (see [Releasing](#8-releasing)):
+
+| Image | Runs as | Listens on |
+|---|---|---|
+| `ghcr.io/marcosjunqueira/brindex-api` | long-running service | `:8080` (healthcheck on `/ready`) |
+| `ghcr.io/marcosjunqueira/brindex-admin` | long-running service | `:8081` public (healthcheck on `/health`), `:8082` admin page |
+| `ghcr.io/marcosjunqueira/brindex-ingest` | one-shot job run by host cron | nothing |
+
+Each release is tagged `X.Y.Z`; the floating `X.Y`, `X` (from 1.0.0 on) and `latest` tags move to it
+only when it is the highest release in that range. Pin the exact `X.Y.Z` in
+production so a restart never changes what runs. The images run as a non-root user and carry no
+secrets or data: configuration comes from the environment and the SQLite files from the `./data`
+bind mount.
+
+brindex-admin's repo is private, so its package is too: log the Docker host in once with a GitHub
+personal access token (classic) that has only `read:packages`:
 
 ```bash
-git clone https://github.com/marcosjunqueira/brindex-api.git   && (cd brindex-api   && ./gradlew installDist)
-git clone https://github.com/marcosjunqueira/brindex-admin.git && (cd brindex-admin && ./gradlew installDist)
+echo "$GHCR_TOKEN" | docker login ghcr.io -u marcosjunqueira --password-stdin
 ```
 
-Each lands in `build/install/<name>/` and is run by a plain JRE container below.
+(After the first release, check each package's visibility under the repo's *Packages*. A public
+brindex-api/brindex-ingest package can be pulled without logging in.)
+
+The deploy files live in this repo under [`deploy/`](../deploy): `docker-compose.yml`,
+`traefik/dynamic.yml` and `.env.example`. Copy that directory to the server, e.g.:
+
+```bash
+git clone --depth 1 https://github.com/marcosjunqueira/brindex-api.git /tmp/brindex-api
+sudo cp -r /tmp/brindex-api/deploy /srv/brindex && sudo chown -R "$USER": /srv/brindex
+cd /srv/brindex && cp .env.example .env && chmod 600 .env && mkdir -p data letsencrypt
+```
 
 ## 3. Traefik: trust only Cloudflare
 
-Download Cloudflare's origin-pull CA next to the compose file:
+Download Cloudflare's origin-pull CA next to `traefik/dynamic.yml`:
 
 ```bash
-mkdir -p traefik
 curl -fsSL -o traefik/cloudflare-origin-pull-ca.pem \
   https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem
 ```
 
-`traefik/dynamic.yml`:
+[`traefik/dynamic.yml`](../deploy/traefik/dynamic.yml) holds only the `cloudflare` TLS option, which
+makes Traefik require Cloudflare's client certificate. It stays in a file because Traefik can't define
+TLS options with Docker labels.
 
-```yaml
-tls:
-  options:
-    cloudflare:
-      minVersion: VersionTLS12
-      clientAuth:
-        caFiles:
-          - /etc/traefik/cloudflare-origin-pull-ca.pem
-        clientAuthType: RequireAndVerifyClientCert
+The rate limits are Docker labels on the `traefik` service in the compose file, so they exist
+whenever Traefik runs and both routers reference them as `@docker`:
 
-http:
-  middlewares:
-    # ~300 req/min per client IP, bursts up to 30. CF-Connecting-IP is set by Cloudflare on every
-    # request and can't be spoofed because only Cloudflare can connect (client cert above).
-    per-ip-ratelimit:
-      rateLimit:
-        average: 5
-        period: 1s
-        burst: 30
-        sourceCriterion:
-          requestHeaderName: CF-Connecting-IP
-    per-ip-inflight:
-      inFlightReq:
-        amount: 10
-        sourceCriterion:
-          requestHeaderName: CF-Connecting-IP
-```
+| Middleware | Setting |
+|---|---|
+| `per-ip-ratelimit` | `average=5`, `period=1s`, `burst=30` per `CF-Connecting-IP` (~300 req/min per client IP) |
+| `per-ip-inflight` | at most 10 concurrent requests per `CF-Connecting-IP` |
 
-Tune `average`/`burst` to taste. Portfolio Performance fetches one series per request, so a user
-refreshing a large portfolio can make a few dozen requests in a burst.
+`CF-Connecting-IP` is set by Cloudflare on every request and can't be spoofed because only Cloudflare
+can connect (client certificate above). Tune `average`/`burst` to taste. Portfolio Performance fetches
+one series per request, so a user refreshing a large portfolio can make a few dozen requests in a
+burst.
 
 ## 4. docker-compose.yml
 
-```yaml
-services:
-  traefik:
-    image: traefik:v3
-    command:
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
-      - --providers.file.filename=/etc/traefik/dynamic.yml
-      - --entrypoints.websecure.address=:443
-      - --certificatesresolvers.le.acme.email=you@example.com
-      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
-      - --certificatesresolvers.le.acme.dnschallenge.provider=cloudflare
-      # Access logs would record ?api_key=... (Portfolio Performance sends the key in the URL).
-      # Either leave access logs off, or enable them and drop the path:
-      # - --accesslog=true
-      # - --accesslog.fields.names.RequestPath=drop
-    environment:
-      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
-    ports:
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik:/etc/traefik:ro
-      - ./letsencrypt:/letsencrypt
-    restart: unless-stopped
+[`deploy/docker-compose.yml`](../deploy/docker-compose.yml) runs the whole stack. Everything
+host-specific comes from `.env` ([`deploy/.env.example`](../deploy/.env.example)):
 
-  brindex-api:
-    image: eclipse-temurin:25-jre
-    command: /app/bin/brindex-api
-    environment:
-      - BRINDEX_DB_PATH=/data/brindex.sqlite
-      - ACCOUNTS_DB_PATH=/data/accounts.sqlite
-      - REQUIRE_API_KEY=true
-      - RATE_LIMIT_PER_MINUTE=60
-    volumes:
-      - ./brindex-api/build/install/brindex-api:/app:ro
-      # Read-write on purpose: SQLite must be able to roll back a journal left by an interrupted
-      # ingest run. The API still never writes (query_only).
-      - ./data:/data
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.api.rule=Host(`api.example.com`)
-      - traefik.http.routers.api.entrypoints=websecure
-      - traefik.http.routers.api.tls.certresolver=le
-      - traefik.http.routers.api.tls.options=cloudflare@file
-      - traefik.http.routers.api.middlewares=per-ip-ratelimit@file,per-ip-inflight@file
-      - traefik.http.services.api.loadbalancer.server.port=8080
-    restart: unless-stopped
+| Variable | Meaning |
+|---|---|
+| `BRINDEX_API_VERSION`, `BRINDEX_ADMIN_VERSION`, `BRINDEX_INGEST_VERSION` | Image versions to run (`X.Y.Z`). Compose refuses to start if one is missing. |
+| `BRINDEX_UID`, `BRINDEX_GID` | Host user that owns `./data` (`id -u`, `id -g`). |
+| `API_HOST`, `BILLING_HOST` | Public hostnames, e.g. `api.example.com`, `billing.example.com`. |
+| `ACME_EMAIL`, `CF_DNS_API_TOKEN` | Let's Encrypt account email and the Cloudflare token from §1. |
 
-  brindex-admin:
-    image: eclipse-temurin:25-jre
-    command: /app/bin/brindex-admin
-    env_file: brindex-admin.env   # ADMIN_PASSWORD, STRIPE_* (see brindex-admin/.env.example)
-    environment:
-      - ACCOUNTS_DB_PATH=/data/accounts.sqlite
-      - PUBLIC_BASE_URL=https://billing.example.com
-      # Bind inside the container; the host-side port mapping below keeps it on localhost.
-      - ADMIN_HOST=0.0.0.0
-    volumes:
-      - ./brindex-admin/build/install/brindex-admin:/app:ro
-      - ./data:/data
-    ports:
-      - "127.0.0.1:8082:8082"   # admin page: host localhost only, never routed by Traefik
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.billing.rule=Host(`billing.example.com`)
-      - traefik.http.routers.billing.entrypoints=websecure
-      - traefik.http.routers.billing.tls.certresolver=le
-      - traefik.http.routers.billing.tls.options=cloudflare@file
-      - traefik.http.routers.billing.middlewares=per-ip-ratelimit@file,per-ip-inflight@file
-      - traefik.http.services.billing.loadbalancer.server.port=8081
-    restart: unless-stopped
-```
+brindex-admin's own secrets (`ADMIN_PASSWORD`, `STRIPE_*`) go in `brindex-admin.env` next to it
+(mode `600`, see brindex-admin's `.env.example`).
 
-`./data` holds both SQLite files: `brindex.sqlite` (written by the brindex-ingest cron job) and
-`accounts.sqlite` (created by brindex-admin on first start). Start brindex-admin once before turning
-on `REQUIRE_API_KEY`, since brindex-api refuses to start without the accounts database.
+What the file sets up:
+
+- **brindex-api** behind Traefik on `API_HOST`, with `REQUIRE_API_KEY=true`. It starts only after
+  brindex-admin is healthy, because it refuses to start without `accounts.sqlite`.
+- **brindex-admin**'s public listener (`:8081`) behind Traefik on `BILLING_HOST`. Its admin page
+  (`:8082`) is published on the host's `127.0.0.1` only and has no Traefik router.
+- **ingest**: a one-shot job in the `jobs` profile, so `docker compose up` never starts it. Host cron
+  runs it with `flock ingest.lock docker compose run --rm ingest ...`, so a manual run and the cron
+  job never overlap (see [`GO_LIVE.md` §3](GO_LIVE.md#3-ingestion-first-load-and-daily-schedule)).
+  It is the only writer of `brindex.sqlite`.
+
+`./data` holds both SQLite files: `brindex.sqlite` (written by the ingest job) and `accounts.sqlite`
+(created by brindex-admin on first start). Every container that touches it runs as
+`BRINDEX_UID:BRINDEX_GID`, so the files keep a single owner, the host user can back them up, and
+brindex-api can write to the database file and its directory. It never writes data (`query_only`),
+but SQLite must be able to roll back a journal left by an interrupted ingest run.
+
+Access logs stay off: they would record `?api_key=...` (Portfolio Performance sends the key in the
+URL). If you turn them on, drop the path (commented flags in the compose file).
 
 ```bash
-echo "CF_DNS_API_TOKEN=..." > .env
+docker compose pull
 docker compose up -d
 ```
 
@@ -202,3 +165,31 @@ for i in $(seq 1 60); do curl -s -o /dev/null -w '%{http_code} ' https://api.exa
 # Admin is not reachable publicly.
 curl -s -o /dev/null -w '%{http_code}\n' https://billing.example.com/admin   # 404
 ```
+
+## 8. Releasing
+
+brindex-api, brindex-admin and brindex-ingest release the same way, with [SEMVER](https://semver.org)
+tags on `main`:
+
+1. Bump the version (`version` in `build.gradle.kts`, or `pyproject.toml` for brindex-ingest) in a
+   PR and merge it, so the packaged app carries the same number as the image.
+2. Tag the merge commit and push the tag:
+   ```bash
+   git switch main && git pull
+   git tag v1.2.3 && git push origin v1.2.3
+   ```
+3. The `Release` workflow (`.github/workflows/release.yml`) then:
+   - checks the tag is on `main` and matches the project version, then runs the build and tests
+     (brindex-api also waits for CodeQL to pass on that commit);
+   - builds the image and pushes it to `ghcr.io/marcosjunqueira/<repo>` as `1.2.3`, and as `1.2`,
+     `1` and `latest` only when no higher release exists in that range, so a backport or a re-run
+     of an old tag never moves them back (no bare `0` tag while the major version is 0). Releases
+     run one at a time per repo;
+   - creates the GitHub Release with notes generated from the merged PRs.
+
+   A failed check stops the release before anything is published; fix it on `main` and tag a new
+   patch version (never move a published tag).
+4. Deploy: set the new version in the server's `.env`, then `docker compose pull && docker compose up -d`.
+   Roll back the same way with the previous version.
+
+The PR CI (`ci.yml`) is unchanged: it still builds and tests every PR and push to `main`.

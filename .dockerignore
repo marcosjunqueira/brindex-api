@@ -1,0 +1,16 @@
+# Only the Gradle wrapper, build scripts and src/ are needed to build the image.
+.git
+.github
+.claude
+.specs
+.gradle
+.kotlin
+build
+out
+.idea
+*.iml
+docs
+.env
+.env.*
+*.sqlite
+*.sqlite-*

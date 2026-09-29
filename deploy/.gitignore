@@ -1,0 +1,7 @@
+# Server-side state and secrets created next to the compose file; never commit them.
+.env
+brindex-admin.env
+data/
+ingest.lock
+letsencrypt/
+traefik/*.pem

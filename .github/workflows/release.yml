@@ -1,0 +1,147 @@
+name: Release
+
+# Publishes a release when a SEMVER tag (vX.Y.Z) is pushed: runs the checks, pushes the image to
+# GHCR tagged X.Y.Z (plus X.Y, X and latest when this is the highest version in that range), then
+# creates the GitHub Release with generated notes.
+# Bump the version in build.gradle.kts on main first, then tag that commit:
+#   git tag v1.2.3 && git push origin v1.2.3
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+# One release at a time per repo, so the floating tags (X.Y, X, latest) are never pushed by two
+# runs at once.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      minor: ${{ steps.floating.outputs.minor }}
+      major: ${{ steps.floating.outputs.major }}
+      latest: ${{ steps.floating.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Require the tag to be on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+      - name: Require the project version to match the tag
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' build.gradle.kts)
+          [ "v$version" = "$GITHUB_REF_NAME" ] \
+            || { echo "::error::build.gradle.kts says $version but the tag is $GITHUB_REF_NAME"; exit 1; }
+      # Floating tags only move forward: X.Y, X and latest go to this release only if no higher
+      # release exists in that range (so re-running an old tag, or a backport, never moves them back).
+      - name: Decide which floating tags this release moves
+        id: floating
+        run: |
+          v=${GITHUB_REF_NAME#v}; minor=${v%.*}; major=${v%%.*}
+          highest() { git tag -l "$1" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1; }
+          is_top() { [ "$(highest "$1")" = "$GITHUB_REF_NAME" ] && echo true || echo false; }
+          echo "minor=$(is_top "v$minor.*")" >> "$GITHUB_OUTPUT"
+          # No bare "0" tag while the major version is 0: 0.x makes no compatibility promise.
+          [ "$major" = 0 ] && echo "major=false" >> "$GITHUB_OUTPUT" || echo "major=$(is_top "v$major.*")" >> "$GITHUB_OUTPUT"
+          echo "latest=$(is_top 'v*')" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "25"
+      # Also validates the Gradle wrapper checksum.
+      - uses: gradle/actions/setup-gradle@v5
+      - run: ./gradlew build
+      # CodeQL runs through GitHub's default setup on every push to main. Wait for its result on the
+      # tagged commit instead of running a second analysis here (default setup rejects uploads from
+      # workflow-based CodeQL).
+      - name: Require CodeQL to pass on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for _ in $(seq 1 40); do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" \
+              --jq '[.check_runs[] | select(.name | startswith("Analyze ("))]')
+            total=$(jq length <<<"$runs")
+            pending=$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")
+            failed=$(jq '[.[] | select(.status == "completed" and .conclusion != "success")] | length' <<<"$runs")
+            if [ "$failed" -gt 0 ]; then
+              echo "::error::CodeQL failed on $GITHUB_SHA"; jq -r '.[] | "\(.name): \(.conclusion)"' <<<"$runs"; exit 1
+            fi
+            if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then
+              jq -r '.[] | "\(.name): \(.conclusion)"' <<<"$runs"; exit 0
+            fi
+            echo "Waiting for CodeQL ($total found, $pending pending)..."; sleep 15
+          done
+          echo "::error::No completed CodeQL analysis for $GITHUB_SHA after 10 minutes"; exit 1
+
+  image:
+    name: Build and push image
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false   # "latest" is listed explicitly below
+          # v1.2.3 -> 1.2.3 always; 1.2, 1 and latest as decided in the verify job.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ needs.verify.outputs.minor == 'true' }}
+            type=semver,pattern={{major}},enable=${{ needs.verify.outputs.major == 'true' }}
+            type=raw,value=latest,enable=${{ needs.verify.outputs.latest == 'true' }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache kept in the registry: the Actions cache is scoped per tag, so a new tag
+          # could never reuse it.
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+
+  release:
+    name: Create GitHub Release
+    needs: [verify, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          LATEST: ${{ needs.verify.outputs.latest }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+            --latest="$LATEST" \
+            --notes "Image: \`${IMAGE}:${TAG#v}\`"

@@ -1,0 +1,15 @@
+# Only what Traefik can't take from Docker labels: the TLS option that makes Traefik accept
+# connections from Cloudflare alone (Authenticated Origin Pulls). The rate-limit middlewares are
+# labels on the traefik service in docker-compose.yml.
+#
+# Download the CA next to this file before starting Traefik:
+#   curl -fsSL -o traefik/cloudflare-origin-pull-ca.pem \
+#     https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem
+tls:
+  options:
+    cloudflare:
+      minVersion: VersionTLS12
+      clientAuth:
+        caFiles:
+          - /etc/traefik/cloudflare-origin-pull-ca.pem
+        clientAuthType: RequireAndVerifyClientCert
