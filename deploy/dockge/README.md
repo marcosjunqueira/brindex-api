@@ -89,9 +89,12 @@ host (`docker login ghcr.io ...` as root) and mount `/root/.docker:/root/.docker
 1. In Dockge, create a stack named `brindex`, paste [`compose.yaml`](compose.yaml) and fill the `.env`
    tab from [`.env.example`](.env.example).
 2. On the host, in the stack directory (Dockge's stacks dir, `/opt/stacks/brindex` by default), create
-   the data dir owned by `BRINDEX_UID:BRINDEX_GID`:
+   the data dir and the ingest lock file owned by `BRINDEX_UID:BRINDEX_GID`, **before the first
+   deploy**. The stack dir belongs to root, and if `data` is missing Docker creates it as root, so
+   the containers fail with `unable to open database file`.
    ```bash
-   mkdir -p data && chown 1000:1000 data
+   sudo mkdir -p data && sudo chown 1000:1000 data && sudo chmod 750 data
+   sudo touch ingest.lock && sudo chown 1000:1000 ingest.lock
    ```
 3. Deploy. brindex-admin starts first and creates `accounts.sqlite`; brindex-api-public starts
    once brindex-admin is healthy. The internal `brindex-api` needs no accounts database.
