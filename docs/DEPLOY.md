@@ -1,6 +1,7 @@
 # Deploying brindex-api and brindex-admin behind Cloudflare + Traefik
 
-Step-by-step production setup for the whole stack on one Docker host:
+Step-by-step production setup for the whole stack on one Docker host. For the full go-live checklist
+(ingestion, Stripe live mode, smoke tests, backups, monitoring, rollback) see [`GO_LIVE.md`](GO_LIVE.md).
 
 ```
 client ──HTTPS──> Cloudflare ──HTTPS + client cert──> Traefik :443 ──> brindex-api   :8080
