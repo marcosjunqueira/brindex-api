@@ -38,7 +38,10 @@ read_version() { sed -n 's/^version = "\(.*\)"$/\1/p' "$VERSION_FILE"; }
 write_version() { sed -i.bak "s/^version = \".*\"$/version = \"$1\"/" "$VERSION_FILE" && rm "$VERSION_FILE.bak"; }
 
 CURRENT=$(read_version)
-echo "$CURRENT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+# SemVer X.Y.Z with no leading zeros: docker/metadata-action rejects 0.2.03 only after the tag is
+# public, and bash arithmetic would read 08 as octal.
+SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+echo "$CURRENT" | grep -Eq "$SEMVER" \
   || die "$VERSION_FILE has version '$CURRENT', expected X.Y.Z"
 IFS=. read -r MAJOR MINOR PATCH <<<"$CURRENT"
 case $BUMP in
@@ -47,7 +50,7 @@ case $BUMP in
   patch) VERSION=$MAJOR.$MINOR.$((PATCH + 1)) ;;
   *) VERSION=${BUMP#v} ;;
 esac
-echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || die "version must be X.Y.Z, got $BUMP"
+echo "$VERSION" | grep -Eq "$SEMVER" || die "version must be X.Y.Z with no leading zeros, got $BUMP"
 TAG=v$VERSION
 
 git fetch -q --tags origin main
@@ -66,10 +69,11 @@ fi
 # main only moves forward: a version below the current one or below the latest release is refused
 # (release.yml would publish it without X.Y, X or latest, which never move back).
 HIGHEST=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
-for floor in "$CURRENT" "${HIGHEST#v}"; do
-  [ -z "$floor" ] || [ "$(printf '%s\n%s\n' "$floor" "$VERSION" | sort -V | tail -n1)" = "$VERSION" ] \
-    || die "$VERSION is lower than $floor"
-done
+newer_or_equal() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$2" ]; }
+newer_or_equal "$CURRENT" "$VERSION" || die "$VERSION is lower than the current version $CURRENT"
+[ -z "$HIGHEST" ] || newer_or_equal "${HIGHEST#v}" "$VERSION" \
+  || die "$VERSION is lower than the latest release $HIGHEST (if that tag is local only, a stale
+  leftover, check git ls-remote --tags origin and delete it with git tag -d $HIGHEST)"
 
 echo "release: $(git remote get-url origin)"
 echo "release:   $VERSION_FILE  $CURRENT -> $VERSION"
@@ -95,7 +99,9 @@ if [ "$CURRENT" != "$VERSION" ]; then
   git commit -qm "Release $VERSION" -- "$VERSION_FILE" \
     || { git checkout -- "$VERSION_FILE"; die "the commit failed; nothing was pushed"; }
 fi
-git tag -a "$TAG" -m "Release $VERSION"
+git tag -a "$TAG" -m "Release $VERSION" \
+  || die "tagging failed after the commit; nothing was pushed. Undo the local release with:
+  git reset --hard origin/main"
 
 # --atomic: main and the tag land together or not at all, so the tag never exists without the
 # commit it points at being on main (release.yml checks that first).
