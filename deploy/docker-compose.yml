@@ -47,6 +47,12 @@ services:
       - traefik.http.middlewares.per-ip-ratelimit.ratelimit.sourcecriterion.requestheadername=CF-Connecting-IP
       - traefik.http.middlewares.per-ip-inflight.inflightreq.amount=10
       - traefik.http.middlewares.per-ip-inflight.inflightreq.sourcecriterion.requestheadername=CF-Connecting-IP
+      # traefik.enable=true is only here so Traefik reads these labels. Without a router of its own
+      # it would also generate a default route to this container; this placeholder replaces it and
+      # matches no real host (.invalid is reserved) nor any request (noop@internal serves nothing).
+      - traefik.http.routers.traefik-noop.rule=Host(`traefik.invalid`)
+      - traefik.http.routers.traefik-noop.entrypoints=websecure
+      - traefik.http.routers.traefik-noop.service=noop@internal
     restart: unless-stopped
 
   brindex-api:
@@ -97,9 +103,10 @@ services:
       - traefik.http.services.billing.loadbalancer.server.port=8081
     restart: unless-stopped
 
-  # One-shot job, the only writer of brindex.sqlite. Never started by `up` (profile); host cron runs
-  #   docker compose run --rm ingest            (default: --source all, last 30 days / current year)
-  #   docker compose run --rm ingest --source ptax --since 2020-01-01
+  # One-shot job, the only writer of brindex.sqlite. Never started by `up` (profile). Always run it
+  # under flock so a manual run and the cron job never overlap:
+  #   flock ingest.lock docker compose run --rm ingest     (default: --source all, last 30 days)
+  #   flock ingest.lock docker compose run --rm ingest --source ptax --since 2020-01-01
   ingest:
     <<: *brindex-user
     image: ghcr.io/marcosjunqueira/brindex-ingest:${BRINDEX_INGEST_VERSION:?set BRINDEX_INGEST_VERSION in .env}

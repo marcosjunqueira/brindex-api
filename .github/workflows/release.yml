@@ -1,8 +1,10 @@
 name: Release
 
 # Publishes a release when a SEMVER tag (vX.Y.Z) is pushed: runs the checks, pushes the image to
-# GHCR tagged X.Y.Z, X.Y, X and latest, then creates the GitHub Release with generated notes.
-# Tag a commit that is already on main:  git tag v1.2.3 && git push origin v1.2.3
+# GHCR tagged X.Y.Z (plus X.Y, X and latest when this is the highest version in that range), then
+# creates the GitHub Release with generated notes.
+# Bump the version in build.gradle.kts on main first, then tag that commit:
+#   git tag v1.2.3 && git push origin v1.2.3
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
@@ -10,8 +12,10 @@ on:
 permissions:
   contents: read
 
+# One release at a time per repo, so the floating tags (X.Y, X, latest) are never pushed by two
+# runs at once.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 env:
@@ -25,6 +29,10 @@ jobs:
     permissions:
       contents: read
       checks: read
+    outputs:
+      minor: ${{ steps.floating.outputs.minor }}
+      major: ${{ steps.floating.outputs.major }}
+      latest: ${{ steps.floating.outputs.latest }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,6 +42,24 @@ jobs:
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+      - name: Require the project version to match the tag
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' build.gradle.kts)
+          [ "v$version" = "$GITHUB_REF_NAME" ] \
+            || { echo "::error::build.gradle.kts says $version but the tag is $GITHUB_REF_NAME"; exit 1; }
+      # Floating tags only move forward: X.Y, X and latest go to this release only if no higher
+      # release exists in that range (so re-running an old tag, or a backport, never moves them back).
+      - name: Decide which floating tags this release moves
+        id: floating
+        run: |
+          v=${GITHUB_REF_NAME#v}; minor=${v%.*}; major=${v%%.*}
+          highest() { git tag -l "$1" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1; }
+          is_top() { [ "$(highest "$1")" = "$GITHUB_REF_NAME" ] && echo true || echo false; }
+          echo "minor=$(is_top "v$minor.*")" >> "$GITHUB_OUTPUT"
+          # No bare "0" tag while the major version is 0: 0.x makes no compatibility promise.
+          [ "$major" = 0 ] && echo "major=false" >> "$GITHUB_OUTPUT" || echo "major=$(is_top "v$major.*")" >> "$GITHUB_OUTPUT"
+          echo "latest=$(is_top 'v*')" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -85,25 +111,26 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           flavor: latest=false   # "latest" is listed explicitly below
-          # v1.2.3 -> 1.2.3, 1.2, 1 and latest. While the major version is 0 the bare major tag
-          # ("0") is skipped: 0.x releases make no compatibility promise across minors.
+          # v1.2.3 -> 1.2.3 always; 1.2, 1 and latest as decided in the verify job.
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
-            type=raw,value=latest
+            type=semver,pattern={{major}}.{{minor}},enable=${{ needs.verify.outputs.minor == 'true' }}
+            type=semver,pattern={{major}},enable=${{ needs.verify.outputs.major == 'true' }}
+            type=raw,value=latest,enable=${{ needs.verify.outputs.latest == 'true' }}
       - uses: docker/build-push-action@v7
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Layer cache kept in the registry: the Actions cache is scoped per tag, so a new tag
+          # could never reuse it.
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 
   release:
     name: Create GitHub Release
-    needs: image
+    needs: [verify, image]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -113,6 +140,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          LATEST: ${{ needs.verify.outputs.latest }}
         run: |
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+            --latest="$LATEST" \
             --notes "Image: \`${IMAGE}:${TAG#v}\`"

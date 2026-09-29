@@ -7,7 +7,7 @@ Step-by-step production setup for the whole stack on one Docker host. For the fu
 client ──HTTPS──> Cloudflare ──HTTPS + client cert──> Traefik :443 ──> brindex-api   :8080
                                                                   └──> brindex-admin :8081 (public billing)
 you ──SSH tunnel──> 127.0.0.1:8082 ──> brindex-admin admin page (never through Traefik)
-host cron ──> docker compose run --rm ingest ──> ./data/brindex.sqlite (only writer)
+host cron ──> flock ingest.lock docker compose run --rm ingest ──> ./data/brindex.sqlite (only writer)
 ```
 
 Who limits what:
@@ -44,7 +44,8 @@ Each repo publishes a Docker image to GHCR on every release (see [Releasing](#8-
 | `ghcr.io/marcosjunqueira/brindex-admin` | long-running service | `:8081` public (healthcheck on `/health`), `:8082` admin page |
 | `ghcr.io/marcosjunqueira/brindex-ingest` | one-shot job run by host cron | nothing |
 
-Each image is tagged `X.Y.Z`, `X.Y`, `X` (from 1.0.0 on) and `latest`. Pin the exact `X.Y.Z` in
+Each release is tagged `X.Y.Z`; the floating `X.Y`, `X` (from 1.0.0 on) and `latest` tags move to it
+only when it is the highest release in that range. Pin the exact `X.Y.Z` in
 production so a restart never changes what runs. The images run as a non-root user and carry no
 secrets or data: configuration comes from the environment and the SQLite files from the `./data`
 bind mount.
@@ -116,7 +117,8 @@ What the file sets up:
 - **brindex-admin**'s public listener (`:8081`) behind Traefik on `BILLING_HOST`. Its admin page
   (`:8082`) is published on the host's `127.0.0.1` only and has no Traefik router.
 - **ingest**: a one-shot job in the `jobs` profile, so `docker compose up` never starts it. Host cron
-  runs it with `docker compose run --rm ingest ...` (see [`GO_LIVE.md` §3](GO_LIVE.md#3-ingestion-first-load-and-daily-schedule)).
+  runs it with `flock ingest.lock docker compose run --rm ingest ...`, so a manual run and the cron
+  job never overlap (see [`GO_LIVE.md` §3](GO_LIVE.md#3-ingestion-first-load-and-daily-schedule)).
   It is the only writer of `brindex.sqlite`.
 
 `./data` holds both SQLite files: `brindex.sqlite` (written by the ingest job) and `accounts.sqlite`
@@ -177,10 +179,12 @@ tags on `main`:
    git tag v1.2.3 && git push origin v1.2.3
    ```
 3. The `Release` workflow (`.github/workflows/release.yml`) then:
-   - checks the tag is on `main` and runs the build and tests (brindex-api also waits for CodeQL to
-     pass on that commit);
-   - builds the image and pushes it to `ghcr.io/marcosjunqueira/<repo>` as `1.2.3`, `1.2`, `1`
-     and `latest` (no bare `0` tag while the major version is 0);
+   - checks the tag is on `main` and matches the project version, then runs the build and tests
+     (brindex-api also waits for CodeQL to pass on that commit);
+   - builds the image and pushes it to `ghcr.io/marcosjunqueira/<repo>` as `1.2.3`, and as `1.2`,
+     `1` and `latest` only when no higher release exists in that range, so a backport or a re-run
+     of an old tag never moves them back (no bare `0` tag while the major version is 0). Releases
+     run one at a time per repo;
    - creates the GitHub Release with notes generated from the merged PRs.
 
    A failed check stops the release before anything is published; fix it on `main` and tag a new

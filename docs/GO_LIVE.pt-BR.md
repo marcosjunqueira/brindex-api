@@ -54,12 +54,14 @@ primeiro.
 
 Rode a partir do diretório do compose (`/srv/brindex` no `DEPLOY.md`). O job `ingest` grava
 `./data/brindex.sqlite` como `BRINDEX_UID` e termina; os argumentos depois de `ingest` vão para o
-`brindex-ingest`.
+`brindex-ingest`. Rode sempre sob `flock ingest.lock`: duas execuções ao mesmo tempo (por exemplo,
+um backfill manual e o cron) disputariam o lock do banco e uma delas falharia com
+`database is locked`. Com `flock`, a segunda espera a primeira terminar.
 
 ```bash
 cd /srv/brindex
 # Carga inicial: histórico. A B3 baixa um arquivo de ~80 MB por ano.
-docker compose run --rm ingest --since 2020-01-01 --since-year 2020
+flock ingest.lock docker compose run --rm ingest --since 2020-01-01 --since-year 2020
 echo "exit code: $?"    # 0 só se todas as fontes funcionaram
 ```
 
@@ -67,7 +69,7 @@ echo "exit code: $?"    # 0 só se todas as fontes funcionaram
 o passo 0, rode as outras três:
 
 ```bash
-for s in treasury-direct ptax cdi; do docker compose run --rm ingest --since 2020-01-01 --since-year 2020 --source $s; done
+for s in treasury-direct ptax cdi; do flock ingest.lock docker compose run --rm ingest --since 2020-01-01 --since-year 2020 --source $s; done
 ```
 
 Cada fonte falha de forma independente; um exit diferente de zero lista no log as fontes que
@@ -77,10 +79,11 @@ Agendamento diário (cron do usuário de deploy, 22:00 no horário do servidor, 
 o fechamento do dia):
 
 ```cron
-0 22 * * * cd /srv/brindex && docker compose run --rm ingest >> /var/log/brindex-ingest.log 2>&1
+0 22 * * * cd /srv/brindex && flock -w 7200 ingest.lock docker compose run --rm ingest >> /var/log/brindex-ingest.log 2>&1
 ```
 
-(Sem `b3`: uma linha por fonte, cada uma terminando em `run --rm ingest --source <fonte>`.)
+(`-w 7200` espera até duas horas por uma execução manual e depois desiste com exit diferente de zero.
+Sem `b3`: uma linha por fonte, cada uma terminando em `run --rm ingest --source <fonte>`.)
 
 - [ ] Carga inicial terminou com exit code 0.
 - [ ] Entrada do cron instalada; o usuário de deploy está no grupo `docker` e consegue gravar o log.
@@ -205,7 +208,7 @@ find "$OUT" -name '*.sqlite' -mtime +14 -delete    # guarda duas semanas localme
 | Problema | Ação |
 |---|---|
 | Release ruim da brindex-api ou do brindex-admin | Volte a versão anterior no `.env` (`BRINDEX_API_VERSION` / `BRINDEX_ADMIN_VERSION`) e rode `docker compose up -d <serviço>`. |
-| Ingestão ruim (valores errados) | Volte o `BRINDEX_INGEST_VERSION` anterior (ou publique uma correção) e rode `docker compose run --rm ingest` de novo no período afetado: os upserts sobrescrevem. Se não bastar, pare a brindex-api, restaure `brindex-<dia>.sqlite` sobre `data/brindex.sqlite` e suba de novo. |
+| Ingestão ruim (valores errados) | Volte o `BRINDEX_INGEST_VERSION` anterior (ou publique uma correção) e rode `flock ingest.lock docker compose run --rm ingest` de novo no período afetado: os upserts sobrescrevem. Se não bastar, pare a brindex-api, restaure `brindex-<dia>.sqlite` sobre `data/brindex.sqlite` e suba de novo. |
 | `accounts.sqlite` danificado | Pare brindex-admin e brindex-api, restaure o `accounts-<dia>.sqlite` mais recente e suba os dois. Assinaturas alteradas depois do backup são corrigidas no próximo webhook do Stripe daquele cliente; confira no Dashboard o que for mais novo que o backup. |
 | Parar de vender (ex.: a B3 negar) | Tire `STRIPE_SECRET_KEY` do `brindex-admin.env` e recrie o brindex-admin: `/subscribe` e o webhook desligam, as chaves existentes continuam funcionando. Pause ou cancele as assinaturas no Dashboard. Para tirar os dados B3 da API, pare de ingerir `b3` (passo 3) e reconstrua o `brindex.sqlite` sem eles. |
 | Chave do Stripe vazada | Role a chave no Dashboard, atualize o `brindex-admin.env`, recrie o brindex-admin. |

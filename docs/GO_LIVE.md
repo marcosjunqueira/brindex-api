@@ -53,11 +53,14 @@ brindex-api refuses to start until `brindex.sqlite` has its tables, so load data
 
 Run from the compose directory (`/srv/brindex` in `DEPLOY.md`). The `ingest` job writes
 `./data/brindex.sqlite` as `BRINDEX_UID` and exits; arguments after `ingest` go to `brindex-ingest`.
+Always start it under `flock ingest.lock`: two runs at once (say, a manual backfill and the cron
+job) would compete for the database lock and one of them would fail with `database is locked`.
+With `flock`, the second run waits for the first to finish.
 
 ```bash
 cd /srv/brindex
 # First load: backfill history. B3 downloads one ~80 MB file per year.
-docker compose run --rm ingest --since 2020-01-01 --since-year 2020
+flock ingest.lock docker compose run --rm ingest --since 2020-01-01 --since-year 2020
 echo "exit code: $?"    # 0 only if every source succeeded
 ```
 
@@ -65,7 +68,7 @@ echo "exit code: $?"    # 0 only if every source succeeded
 is settled, run the other three instead:
 
 ```bash
-for s in treasury-direct ptax cdi; do docker compose run --rm ingest --since 2020-01-01 --since-year 2020 --source $s; done
+for s in treasury-direct ptax cdi; do flock ingest.lock docker compose run --rm ingest --since 2020-01-01 --since-year 2020 --source $s; done
 ```
 
 Each source fails independently; a non-zero exit names the failed sources in the log. Re-running is
@@ -74,10 +77,11 @@ safe (upserts), so just run it again after a transient outage.
 Daily schedule (cron as the deploy user, 22:00 server time, after B3 publishes the day's close):
 
 ```cron
-0 22 * * * cd /srv/brindex && docker compose run --rm ingest >> /var/log/brindex-ingest.log 2>&1
+0 22 * * * cd /srv/brindex && flock -w 7200 ingest.lock docker compose run --rm ingest >> /var/log/brindex-ingest.log 2>&1
 ```
 
-(Without `b3`: one line per source, each ending in `run --rm ingest --source <source>`.)
+(`-w 7200` waits up to two hours for a manual run to finish, then gives up with a non-zero exit.
+Without `b3`: one line per source, each ending in `run --rm ingest --source <source>`.)
 
 - [ ] First load finished with exit code 0.
 - [ ] Cron entry installed; the deploy user is in the `docker` group and can write the log file.
@@ -200,7 +204,7 @@ find "$OUT" -name '*.sqlite' -mtime +14 -delete    # keep two weeks locally
 | Problem | Action |
 |---|---|
 | Bad release of brindex-api or brindex-admin | Set the previous version in `.env` (`BRINDEX_API_VERSION` / `BRINDEX_ADMIN_VERSION`) and `docker compose up -d <service>`. |
-| Bad ingestion (wrong values) | Set the previous `BRINDEX_INGEST_VERSION` (or release a fix) and re-run `docker compose run --rm ingest` for the affected range: upserts overwrite. If that isn't enough, stop brindex-api, restore `brindex-<day>.sqlite` over `data/brindex.sqlite`, start it again. |
+| Bad ingestion (wrong values) | Set the previous `BRINDEX_INGEST_VERSION` (or release a fix) and re-run `flock ingest.lock docker compose run --rm ingest` for the affected range: upserts overwrite. If that isn't enough, stop brindex-api, restore `brindex-<day>.sqlite` over `data/brindex.sqlite`, start it again. |
 | `accounts.sqlite` damaged | Stop brindex-admin and brindex-api, restore the latest `accounts-<day>.sqlite`, start both. Subscriptions changed since then are corrected by the next Stripe webhook for that customer; check the Dashboard for anything newer than the backup. |
 | Stop selling (e.g. B3 says no) | Remove `STRIPE_SECRET_KEY` from `brindex-admin.env` and recreate brindex-admin: `/subscribe` and the webhook turn off, existing keys keep working. Pause or cancel subscriptions in the Dashboard. To drop B3 data from the API, stop ingesting `b3` (step 3) and rebuild `brindex.sqlite` without it. |
 | Leaked Stripe key | Roll it in the Dashboard, update `brindex-admin.env`, recreate brindex-admin. |
