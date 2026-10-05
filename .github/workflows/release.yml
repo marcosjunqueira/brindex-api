@@ -65,7 +65,7 @@ jobs:
           distribution: temurin
           java-version: "25"
       # Also validates the Gradle wrapper checksum.
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew build
       # CodeQL runs through GitHub's default setup on every push to main. Wait for its result on the
       # tagged commit instead of running a second analysis here (default setup rejects uploads from
